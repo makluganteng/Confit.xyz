@@ -1,12 +1,21 @@
 {
   "name": "confit-xyz",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "npm run --workspace=apps/web dev",
     "dev:risk": "npm run --workspace=apps/risk-service dev",
     "build": "npm run --workspace=apps/web build",
     "db:push": "npm run --workspace=apps/web db:push",
-    "db:generate": "npm run --workspace=apps/web db:generate"
+    "db:generate": "npm run --workspace=apps/web db:generate",
+    "test": "jest --config jest.config.js"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6"
   }
 }
