@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ChallengeTier {
+  STARTER
+  PRO
+}
+
+enum ChallengeStatus {
+  ACTIVE
+  PASSED
+  FAILED
+}
+
+enum AgentStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum OrderSide {
+  LONG
+  SHORT
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+}
+
+enum OrderStatus {
+  PENDING
+  FILLED
+  REJECTED
+  CANCELLED
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+}
+
+model User {
+  id            String      @id @default(uuid())
+  privyId       String      @unique @map("privy_id")
+  walletAddress String?     @map("wallet_address")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  challenges    Challenge[]
+  agents        Agent[]
+
+  @@map("users")
+}
+
+model Challenge {
+  id                   String          @id @default(uuid())
+  userId               String          @map("user_id")
+  user                 User            @relation(fields: [userId], references: [id])
+  tier                 ChallengeTier
+  entryFee             Decimal         @map("entry_fee") @db.Decimal(18, 6)
+  status               ChallengeStatus @default(ACTIVE)
+  pacificaSubaccountId String?         @map("pacifica_subaccount_id")
+  startingCapital      Decimal         @map("starting_capital") @db.Decimal(18, 6)
+  currentEquity        Decimal         @map("current_equity") @db.Decimal(18, 6)
+  realizedPnl          Decimal         @default(0) @map("realized_pnl") @db.Decimal(18, 6)
+  profitTargetPct      Decimal         @default(0.08) @map("profit_target_pct") @db.Decimal(5, 4)
+  profitSplitPct       Decimal         @default(0.80) @map("profit_split_pct") @db.Decimal(5, 4)
+  expiresAt            DateTime        @map("expires_at")
+  createdAt            DateTime        @default(now()) @map("created_at")
+  endedAt              DateTime?       @map("ended_at")
+  orders               Order[]
+  positions            Position[]
+  riskSnapshots        RiskSnapshot[]
+
+  @@map("challenges")
+}
+
+model Agent {
+  id         String      @id @default(uuid())
+  userId     String      @map("user_id")
+  user       User        @relation(fields: [userId], references: [id])
+  name       String
+  apiKeyHash String      @map("api_key_hash")
+  status     AgentStatus @default(ACTIVE)
+  createdAt  DateTime    @default(now()) @map("created_at")
+  orders     Order[]
+
+  @@map("agents")
+}
+
+model Order {
+  id              String      @id @default(uuid())
+  challengeId     String      @map("challenge_id")
+  challenge       Challenge   @relation(fields: [challengeId], references: [id])
+  agentId         String?     @map("agent_id")
+  agent           Agent?      @relation(fields: [agentId], references: [id])
+  side            OrderSide
+  pair            String
+  size            Decimal     @db.Decimal(18, 6)
+  leverage        Decimal     @db.Decimal(5, 2)
+  orderType       OrderType   @map("order_type")
+  limitPrice      Decimal?    @map("limit_price") @db.Decimal(18, 6)
+  status          OrderStatus @default(PENDING)
+  pacificaOrderId String?     @map("pacifica_order_id")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  @@map("orders")
+}
+
+model Position {
+  id            String         @id @default(uuid())
+  challengeId   String         @map("challenge_id")
+  challenge     Challenge      @relation(fields: [challengeId], references: [id])
+  pair          String
+  side          OrderSide
+  size          Decimal        @db.Decimal(18, 6)
+  leverage      Decimal        @db.Decimal(5, 2)
+  entryPrice    Decimal        @map("entry_price") @db.Decimal(18, 6)
+  currentPrice  Decimal        @map("current_price") @db.Decimal(18, 6)
+  unrealizedPnl Decimal        @map("unrealized_pnl") @db.Decimal(18, 6)
+  status        PositionStatus @default(OPEN)
+  openedAt      DateTime       @default(now()) @map("opened_at")
+  closedAt      DateTime?      @map("closed_at")
+
+  @@map("positions")
+}
+
+model RiskSnapshot {
+  id           String    @id @default(uuid())
+  challengeId  String    @map("challenge_id")
+  challenge    Challenge @relation(fields: [challengeId], references: [id])
+  equity       Decimal   @db.Decimal(18, 6)
+  drawdownPct  Decimal   @map("drawdown_pct") @db.Decimal(5, 4)
+  dailyLossPct Decimal   @map("daily_loss_pct") @db.Decimal(5, 4)
+  timestamp    DateTime  @default(now())
+
+  @@map("risk_snapshots")
+}
