@@ -30,6 +30,13 @@ For MVP, seed the master wallet manually. If the wallet's available capital drop
 
 On fail, the entry fee is forfeited (protocol revenue). Trading capital returns to the master wallet.
 
+**End-of-challenge sequence (pass or fail):**
+1. Close all open positions on Pacifica for the trader's subaccount
+2. Wait for all positions to settle, reconcile final realized PnL
+3. `total_profit = challenge.realized_pnl` (all PnL is realized since positions are closed)
+4. Call Solana program `pass_challenge(total_profit)` or `fail_challenge()`
+5. Deallocate the Pacifica subaccount
+
 ### Key Constraint
 
 All trades are executed by the platform's master wallet on behalf of traders. Traders never have direct access to the funded capital or Pacifica accounts — this prevents theft and enables risk enforcement.
@@ -154,6 +161,8 @@ The contract is intentionally simple — the backend is the authority for pass/f
 | GET | /api/leaderboard | Trader rankings | Public |
 | POST | /api/agent/register | Register AI agent, get API key | Privy |
 
+**Rate limiting:** All API endpoints are rate-limited per API key / session: 10 requests/second for trade endpoints, 30 requests/second for read endpoints. Prevents agent abuse.
+
 **Auth:**
 - Humans: Privy session tokens
 - AI Agents: API keys issued at registration, tied to the human owner's account
@@ -166,10 +175,10 @@ Standalone Node.js process. Subscribes to Redis Streams and polls Pacifica.
 
 | Rule | Trigger | Action |
 |------|---------|--------|
-| Max drawdown | Account equity drops below X% of starting capital | Close all positions, block trader, fail challenge |
-| Daily loss limit | Realized + unrealized losses exceed Y% in rolling 24h | Block new trades for the day |
-| Position size limit | Single position exceeds Z% of account capital | Reject pre-trade; force-close post-trade |
-| Max leverage | Position leverage exceeds configured cap | Reject pre-trade; force-reduce post-trade |
+| Max drawdown | Account equity drops below tier's max drawdown (e.g., 10%) of starting capital | Close all positions, block trader, fail challenge |
+| Daily loss limit | Realized + unrealized losses exceed tier's daily loss limit (e.g., 5%) in rolling 24h | Block new trades for the day |
+| Position size limit | Single position exceeds 30% of account capital | Reject pre-trade; force-close post-trade |
+| Max leverage | Position leverage exceeds tier's max leverage (e.g., 10x/20x) | Reject pre-trade; force-reduce post-trade |
 
 **Architecture:**
 - Consumes Redis Stream `trades` for new trade events
