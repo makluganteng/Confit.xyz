@@ -113,7 +113,7 @@ All trades are executed by the platform's master wallet on behalf of traders. Tr
 1. Risk service consumes Redis Stream `trades`
 2. Risk service polls Pacifica every 1-2 seconds for position data per active trader
 3. On violation: publishes kill event to Redis Stream `risk-events`, updates PostgreSQL, closes positions on Pacifica
-4. Next.js API consumes `risk-events`, pushes to frontend via WebSocket
+4. Next.js API consumes `risk-events`, pushes to frontend via SSE
 5. If max drawdown hit: calls Solana program `fail_challenge`
 
 ---
@@ -186,7 +186,7 @@ Standalone Node.js process. Subscribes to Redis Streams and polls Pacifica.
 - Maintains in-memory risk snapshots per trader for speed
 - Persists snapshots to PostgreSQL periodically for crash recovery
 - Publishes violations to Redis Stream `risk-events`
-- Next.js API subscribes to `risk-events` and pushes to frontend via WebSocket
+- Next.js API subscribes to `risk-events` and pushes to frontend via SSE
 
 ### 4. AI Agent Integration
 
@@ -204,7 +204,7 @@ Confit is a platform that accepts user-owned AI agents. Users bring their own tr
 - REST API with clear documentation
 - API key authentication tied to owner account
 - Real-time position/PnL endpoints
-- WebSocket feed for risk status updates
+- SSE feed for risk status updates
 
 The platform is agent-framework agnostic — any bot (custom Python, LangChain, etc.) can integrate via the REST API.
 
