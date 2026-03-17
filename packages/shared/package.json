@@ -1,0 +1,6 @@
+{
+  "name": "@confit/shared",
+  "private": true,
+  "main": "src/tiers.ts",
+  "types": "src/tiers.ts"
+}
