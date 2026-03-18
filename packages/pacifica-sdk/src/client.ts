@@ -396,9 +396,9 @@ export class PacificaClient {
    */
   async claimReferral(referralCode: string): Promise<PacificaResponse> {
     const payload: Record<string, unknown> = {
-      referral_code: referralCode,
+      code: referralCode,
     };
-    return this.signedPost("/referral/claim", "claim_referral", payload);
+    return this.signedPost("/referral/user/code/claim", "claim_referral_code", payload);
   }
 
   // ─── Utility ───────────────────────────────────────────────

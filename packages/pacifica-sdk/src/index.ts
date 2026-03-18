@@ -19,4 +19,10 @@ export {
   CENTRAL_STATE,
   PACIFICA_VAULT,
   USDC_MINT,
+  TESTNET_PACIFICA_PROGRAM_ID,
+  TESTNET_CENTRAL_STATE,
+  TESTNET_PACIFICA_VAULT,
+  TESTNET_USDC_MINT,
+  TESTNET_DEPOSIT_OPTIONS,
 } from "./deposit.js";
+export type { DepositOptions } from "./deposit.js";

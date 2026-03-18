@@ -13,7 +13,7 @@ import {
 } from "@solana/spl-token";
 import { createHash } from "crypto";
 
-// Pacifica on-chain program constants (mainnet)
+// ─── Mainnet Constants ───────────────────────────────────────
 export const PACIFICA_PROGRAM_ID = new PublicKey(
   "PCFA5iYgmqK6MqPhWNKg7Yv7auX7VZ4Cx7T1eJyrAMH"
 );
@@ -25,6 +25,20 @@ export const PACIFICA_VAULT = new PublicKey(
 );
 export const USDC_MINT = new PublicKey(
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+);
+
+// ─── Testnet Constants ───────────────────────────────────────
+export const TESTNET_PACIFICA_PROGRAM_ID = new PublicKey(
+  "peRPsYCcB1J9jvrs29jiGdjkytxs8uHLmSPLKKP9ptm"
+);
+export const TESTNET_CENTRAL_STATE = new PublicKey(
+  "2zPRq1Qvdq5A4Ld6WsH7usgCge4ApZRYfhhf5VAjfXxv"
+);
+export const TESTNET_PACIFICA_VAULT = new PublicKey(
+  "5SDFdHZGTZbyRYu54CgmRkCGnPHC5pYaN27p7XGLqnBs"
+);
+export const TESTNET_USDC_MINT = new PublicKey(
+  "USDPqRbLidFGufty2s3oizmDEKdqx7ePTqzDMbf5ZKM"
 );
 
 /**
@@ -59,6 +73,21 @@ function buildDepositInstructionData(amountUsdc: number): Buffer {
   return Buffer.concat([discriminator, amountBytes]);
 }
 
+export interface DepositOptions {
+  usdcMint?: PublicKey;
+  vault?: PublicKey;
+  programId?: PublicKey;
+  centralState?: PublicKey;
+}
+
+/** Preconfigured testnet deposit options */
+export const TESTNET_DEPOSIT_OPTIONS: DepositOptions = {
+  usdcMint: TESTNET_USDC_MINT,
+  vault: TESTNET_PACIFICA_VAULT,
+  programId: TESTNET_PACIFICA_PROGRAM_ID,
+  centralState: TESTNET_CENTRAL_STATE,
+};
+
 /**
  * Build a Pacifica deposit transaction.
  * This deposits USDC from a wallet into the Pacifica vault.
@@ -66,38 +95,48 @@ function buildDepositInstructionData(amountUsdc: number): Buffer {
 export async function buildDepositTransaction(
   connection: Connection,
   depositor: PublicKey,
-  amountUsdc: number
+  amountUsdc: number,
+  options?: DepositOptions
 ): Promise<Transaction> {
+  const mint = options?.usdcMint ?? USDC_MINT;
+  const vault = options?.vault ?? PACIFICA_VAULT;
+  const programId = options?.programId ?? PACIFICA_PROGRAM_ID;
+  const centralState = options?.centralState ?? CENTRAL_STATE;
+
   // Get the depositor's USDC associated token account
   const depositorUsdcAta = await getAssociatedTokenAddress(
-    USDC_MINT,
+    mint,
     depositor
   );
 
   // Get event authority PDA
   const [eventAuthority] = PublicKey.findProgramAddressSync(
     [Buffer.from("__event_authority")],
-    PACIFICA_PROGRAM_ID
+    programId
   );
 
-  // Build instruction accounts (must match the Python SDK order exactly)
+  // Build instruction accounts
+  // Order matches the Python SDK (deposit.py) exactly:
+  //   depositor, depositorUsdcAccount, centralState, pacificaVault,
+  //   tokenProgram, associatedTokenProgram, usdcMint, systemProgram,
+  //   eventAuthority, programId
   const keys = [
     { pubkey: depositor, isSigner: true, isWritable: true },
     { pubkey: depositorUsdcAta, isSigner: false, isWritable: true },
-    { pubkey: CENTRAL_STATE, isSigner: false, isWritable: true },
-    { pubkey: PACIFICA_VAULT, isSigner: false, isWritable: true },
+    { pubkey: centralState, isSigner: false, isWritable: true },
+    { pubkey: vault, isSigner: false, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: USDC_MINT, isSigner: false, isWritable: false },
+    { pubkey: mint, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: eventAuthority, isSigner: false, isWritable: false },
-    { pubkey: PACIFICA_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: programId, isSigner: false, isWritable: false },
   ];
 
   const data = buildDepositInstructionData(amountUsdc);
 
   const instruction = new TransactionInstruction({
-    programId: PACIFICA_PROGRAM_ID,
+    programId: programId,
     keys,
     data,
   });
@@ -117,12 +156,14 @@ export async function buildDepositTransaction(
 export async function deposit(
   connection: Connection,
   keypair: Keypair,
-  amountUsdc: number
+  amountUsdc: number,
+  options?: DepositOptions
 ): Promise<string> {
   const tx = await buildDepositTransaction(
     connection,
     keypair.publicKey,
-    amountUsdc
+    amountUsdc,
+    options
   );
   tx.sign(keypair);
 
