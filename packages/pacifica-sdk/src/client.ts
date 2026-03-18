@@ -289,63 +289,127 @@ export class PacificaClient {
     );
   }
 
-  // ─── Convenience Methods for Confit ────────────────────────
+  // ─── Agent Wallets ──────────────────────────────────────────
 
   /**
-   * Create a new subaccount, fund it, and set leverage.
-   * Returns the subaccount keypair for signing future trades.
+   * Bind an agent wallet to this account.
+   * The agent wallet can then sign trades on behalf of this account.
    */
-  async setupTraderSubaccount(
-    fundAmount: string,
-    symbol: string,
-    leverage: number
-  ): Promise<{ subKeypair: Keypair; subPublicKey: string }> {
-    // Generate a fresh keypair for the subaccount
-    const subKeypair = Keypair.generate();
-    const subPublicKey = subKeypair.publicKey.toBase58();
-
-    // Create the subaccount relationship
-    const createResult = await this.createSubaccount(subKeypair);
-    if (!createResult.success) {
-      throw new Error(
-        `Failed to create subaccount: ${createResult.error ?? "unknown error"}`
-      );
-    }
-
-    // Transfer funds from main to subaccount
-    const transferResult = await this.transferFunds({
-      toAccount: subPublicKey,
-      amount: fundAmount,
-    });
-    if (!transferResult.success) {
-      throw new Error(
-        `Failed to fund subaccount: ${transferResult.error ?? "unknown error"}`
-      );
-    }
-
-    // Set leverage on the subaccount
-    const subClient = new PacificaClient(subKeypair, {
-      baseUrl: this.baseUrl,
-      wsUrl: this.wsUrl,
-    });
-    const leverageResult = await subClient.updateLeverage({ symbol, leverage });
-    if (!leverageResult.success) {
-      throw new Error(
-        `Failed to set leverage: ${leverageResult.error ?? "unknown error"}`
-      );
-    }
-
-    return { subKeypair, subPublicKey };
+  async bindAgentWallet(
+    agentWalletPublicKey: string
+  ): Promise<PacificaResponse> {
+    const payload: Record<string, unknown> = {
+      agent_wallet: agentWalletPublicKey,
+    };
+    return this.signedPost("/agent/bind", "bind_agent_wallet", payload);
   }
 
   /**
-   * Create a PacificaClient for a subaccount (using the sub's keypair).
+   * Place a market order using an agent wallet's signature.
+   * The agent wallet signs the request, but the order is on this account.
    */
-  subaccountClient(subKeypair: Keypair): PacificaClient {
-    return new PacificaClient(subKeypair, {
-      baseUrl: this.baseUrl,
-      wsUrl: this.wsUrl,
-      expiryWindow: this.expiryWindow,
+  async createMarketOrderAsAgent(
+    params: MarketOrderParams,
+    agentKeypair: Keypair
+  ): Promise<PacificaResponse> {
+    const agentPublicKey = agentKeypair.publicKey.toBase58();
+    const header = this.makeHeader("create_market_order");
+    const payload: Record<string, unknown> = {
+      symbol: params.symbol,
+      amount: params.amount,
+      side: params.side,
+      slippage_percent: params.slippagePercent ?? "0.5",
+      reduce_only: params.reduceOnly ?? false,
+      client_order_id: params.clientOrderId ?? crypto.randomUUID(),
+    };
+
+    const { signature } = signMessage(header, payload, agentKeypair);
+
+    const body = {
+      account: this.publicKey,
+      agent_wallet: agentPublicKey,
+      signature,
+      timestamp: header.timestamp,
+      expiry_window: header.expiry_window,
+      ...payload,
+    };
+
+    const res = await fetch(`${this.baseUrl}/orders/create_market`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
+
+    return (await res.json()) as PacificaResponse;
+  }
+
+  // ─── Positions ─────────────────────────────────────────────
+
+  /**
+   * Set take-profit and stop-loss for a position.
+   */
+  async setPositionTpsl(params: {
+    symbol: string;
+    side: "bid" | "ask";
+    takeProfit?: {
+      stopPrice: string;
+      limitPrice?: string;
+      amount?: string;
+      clientOrderId?: string;
+    };
+    stopLoss?: {
+      stopPrice: string;
+      limitPrice?: string;
+      amount?: string;
+      clientOrderId?: string;
+    };
+  }): Promise<PacificaResponse> {
+    const payload: Record<string, unknown> = {
+      symbol: params.symbol,
+      side: params.side,
+    };
+    if (params.takeProfit) {
+      const tp: Record<string, unknown> = {
+        stop_price: params.takeProfit.stopPrice,
+      };
+      if (params.takeProfit.limitPrice) tp.limit_price = params.takeProfit.limitPrice;
+      if (params.takeProfit.amount) tp.amount = params.takeProfit.amount;
+      if (params.takeProfit.clientOrderId) tp.client_order_id = params.takeProfit.clientOrderId;
+      payload.take_profit = tp;
+    }
+    if (params.stopLoss) {
+      const sl: Record<string, unknown> = {
+        stop_price: params.stopLoss.stopPrice,
+      };
+      if (params.stopLoss.limitPrice) sl.limit_price = params.stopLoss.limitPrice;
+      if (params.stopLoss.amount) sl.amount = params.stopLoss.amount;
+      if (params.stopLoss.clientOrderId) sl.client_order_id = params.stopLoss.clientOrderId;
+      payload.stop_loss = sl;
+    }
+    return this.signedPost("/positions/tpsl", "set_position_tpsl", payload);
+  }
+
+  // ─── Referral ──────────────────────────────────────────────
+
+  /**
+   * Claim a referral code. Required once per wallet before trading.
+   */
+  async claimReferral(referralCode: string): Promise<PacificaResponse> {
+    const payload: Record<string, unknown> = {
+      referral_code: referralCode,
+    };
+    return this.signedPost("/referral/claim", "claim_referral", payload);
+  }
+
+  // ─── Utility ───────────────────────────────────────────────
+
+  /** Get the public key of this client's keypair. */
+  getPublicKey(): string {
+    return this.publicKey;
+  }
+
+  /** Get the keypair. */
+  getKeypair(): Keypair {
+    return this.keypair;
   }
 }
