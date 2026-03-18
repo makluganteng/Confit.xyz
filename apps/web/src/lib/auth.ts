@@ -33,13 +33,29 @@ export async function authenticate(req: Request): Promise<AuthResult> {
   try {
     const token = authHeader.slice(7);
     const claims = await privy.verifyAuthToken(token);
-    // Upsert user on first login
+
+    // Fetch full user to get Solana wallet address
+    let walletAddress: string | null = null;
+    try {
+      const privyUser = await privy.getUser(claims.userId);
+      // Find the Solana wallet (embedded or external)
+      const solanaWallet = privyUser.linkedAccounts?.find(
+        (a: any) => a.type === "wallet" && a.chainType === "solana"
+      );
+      if (solanaWallet && "address" in solanaWallet) {
+        walletAddress = solanaWallet.address as string;
+      }
+    } catch {
+      // Non-critical — we can still authenticate without wallet
+    }
+
+    // Upsert user on first login, update wallet if found
     const user = await prisma.user.upsert({
       where: { privyId: claims.userId },
-      update: {},
+      update: walletAddress ? { walletAddress } : {},
       create: {
         privyId: claims.userId,
-        walletAddress: null,
+        walletAddress,
       },
     });
     return { type: "user", userId: user.id };
