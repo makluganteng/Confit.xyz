@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticate } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { closePosition } from "@/lib/pacifica";
+import { getChallengeClient } from "@/lib/pacifica";
 
 export async function POST(
   req: NextRequest,
@@ -27,7 +27,16 @@ export async function POST(
     return NextResponse.json({ error: "Position already closed" }, { status: 400 });
   }
 
-  await closePosition(position.challenge.pacificaSubaccountId!, position.pair);
+  // Close by placing an opposite reduce-only market order
+  const client = getChallengeClient(position.challenge.walletSecretKey!);
+  const closeSide = position.side === "LONG" ? "ask" : "bid";
+  const symbol = position.pair.replace("-PERP", "");
+  await client.createMarketOrder({
+    symbol,
+    amount: Number(position.size).toString(),
+    side: closeSide,
+    reduceOnly: true,
+  });
 
   const updated = await prisma.position.update({
     where: { id },

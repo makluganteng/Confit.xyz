@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await placeOrder({
-    subaccountId: challenge.pacificaSubaccountId!,
+    walletSecretKey: challenge.walletSecretKey!,
     pair,
     side,
     size,

@@ -27,7 +27,7 @@ export async function DELETE(
     return NextResponse.json({ error: "Only pending orders can be cancelled" }, { status: 400 });
   }
 
-  await cancelOrder(order.challenge.pacificaSubaccountId!, order.pacificaOrderId!);
+  await cancelOrder(order.challenge.walletSecretKey!, order.pair, order.pacificaOrderId!);
 
   const updated = await prisma.order.update({
     where: { id },

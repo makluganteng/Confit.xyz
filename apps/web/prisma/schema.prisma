@@ -62,7 +62,8 @@ model Challenge {
   tier                 ChallengeTier
   entryFee             Decimal         @map("entry_fee") @db.Decimal(18, 6)
   status               ChallengeStatus @default(ACTIVE)
-  pacificaSubaccountId String?         @map("pacifica_subaccount_id")
+  walletPublicKey      String?         @map("wallet_public_key")
+  walletSecretKey      String?         @map("wallet_secret_key")
   startingCapital      Decimal         @map("starting_capital") @db.Decimal(18, 6)
   currentEquity        Decimal         @map("current_equity") @db.Decimal(18, 6)
   realizedPnl          Decimal         @default(0) @map("realized_pnl") @db.Decimal(18, 6)
