@@ -6,6 +6,7 @@ module.exports = {
     "^@confit/shared/(.*)$": "<rootDir>/packages/shared/$1",
     "^@confit/pacifica-sdk/(.*)$": "<rootDir>/packages/pacifica-sdk/$1",
     "^@/(.*)$": "<rootDir>/apps/web/src/$1",
+    "^(\\.{1,2}/.*)\\.js$": "$1",
   },
   transform: {
     "^.+\\.tsx?$": ["ts-jest", { tsconfig: { esModuleInterop: true } }],
