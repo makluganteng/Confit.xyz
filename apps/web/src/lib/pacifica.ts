@@ -261,9 +261,97 @@ export async function closeAllPositions(
 }
 
 export async function withdrawToTreasury(
-  walletSecretKey: string
+  walletSecretKey: string,
+  amount: string
 ): Promise<void> {
-  // TODO: Implement Pacifica withdrawal (reverse deposit on-chain instruction)
-  // Then transfer USDC from challenge wallet back to treasury
-  console.log("[Pacifica] Withdrawal not yet implemented");
+  const treasury = getTreasuryKeypair();
+  const challengeSecretKey = bs58.decode(walletSecretKey);
+  const challengeKeypair = Keypair.fromSecretKey(challengeSecretKey);
+
+  // Step 1: Withdraw from Pacifica vault to challenge wallet's on-chain token account
+  const client = getChallengeClient(walletSecretKey);
+  console.log(`[Pacifica] Withdrawing ${amount} USDC from Pacifica vault...`);
+  const result = await client.withdraw(amount);
+  if (!result.success) {
+    console.error(`[Pacifica] Withdraw failed: ${result.error}`);
+    throw new Error(`Pacifica withdraw failed: ${result.error}`);
+  }
+  console.log(`[Pacifica] Withdraw initiated:`, result.data);
+
+  // Step 2: Wait for the withdrawal to process on-chain
+  console.log("[Pacifica] Waiting 10s for withdrawal to process...");
+  await new Promise((r) => setTimeout(r, 10_000));
+
+  // Step 3: Transfer USDC from challenge wallet back to treasury
+  const mint = getUsdcMint();
+  const challengeAta = await getAssociatedTokenAddress(mint, challengeKeypair.publicKey);
+  const treasuryAta = await getAssociatedTokenAddress(mint, treasury.publicKey);
+
+  // Get current USDC balance of challenge wallet
+  let usdcBalance = 0;
+  try {
+    const account = await getAccount(connection, challengeAta);
+    usdcBalance = Number(account.amount);
+  } catch {
+    console.warn("[Pacifica] Challenge wallet has no USDC token account yet");
+  }
+
+  if (usdcBalance > 0) {
+    console.log(`[Pacifica] Transferring ${usdcBalance / 1_000_000} USDC back to treasury...`);
+    const usdcTx = new Transaction();
+
+    // Create treasury ATA if needed
+    try {
+      await getAccount(connection, treasuryAta);
+    } catch {
+      usdcTx.add(
+        createAssociatedTokenAccountInstruction(
+          challengeKeypair.publicKey,
+          treasuryAta,
+          treasury.publicKey,
+          mint
+        )
+      );
+    }
+
+    usdcTx.add(
+      createTransferInstruction(challengeAta, treasuryAta, challengeKeypair.publicKey, usdcBalance)
+    );
+
+    usdcTx.feePayer = challengeKeypair.publicKey;
+    const { blockhash } = await connection.getLatestBlockhash();
+    usdcTx.recentBlockhash = blockhash;
+    usdcTx.sign(challengeKeypair);
+
+    const usdcSig = await connection.sendRawTransaction(usdcTx.serialize());
+    await connection.confirmTransaction(usdcSig, "confirmed");
+    console.log(`[Pacifica] USDC return tx: ${usdcSig}`);
+  } else {
+    console.warn("[Pacifica] No USDC to transfer back to treasury");
+  }
+
+  // Step 4: Transfer remaining SOL back to treasury (leave a small amount for fees)
+  const solBalance = await connection.getBalance(challengeKeypair.publicKey);
+  const FEE_RESERVE = 5_000; // lamports to keep for tx fee
+  const solToReturn = solBalance - FEE_RESERVE;
+  if (solToReturn > 0) {
+    console.log(`[Pacifica] Returning ${solToReturn / LAMPORTS_PER_SOL} SOL to treasury...`);
+    const solTx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: challengeKeypair.publicKey,
+        toPubkey: treasury.publicKey,
+        lamports: solToReturn,
+      })
+    );
+    solTx.feePayer = challengeKeypair.publicKey;
+    const { blockhash: solBlockhash } = await connection.getLatestBlockhash();
+    solTx.recentBlockhash = solBlockhash;
+    solTx.sign(challengeKeypair);
+
+    const solSig = await connection.sendRawTransaction(solTx.serialize());
+    await connection.confirmTransaction(solSig, "confirmed");
+    console.log(`[Pacifica] SOL return tx: ${solSig}`);
+  }
+
+  console.log("[Pacifica] Treasury withdrawal complete");
 }

@@ -1,15 +1,34 @@
 import { prisma } from "./db";
+import { closeAllAndWithdraw } from "./pacifica-actions";
 
 export async function handleChallengeFailed(challengeId: string) {
   console.log(`Challenge ${challengeId} FAILED — executing end sequence`);
+
+  const challenge = await prisma.challenge.findUnique({
+    where: { id: challengeId },
+  });
+
+  if (!challenge) {
+    console.error(`Challenge ${challengeId} not found`);
+    return;
+  }
+
+  // Close all positions and withdraw funds back to treasury
+  if (challenge.walletSecretKey) {
+    const equity = challenge.currentEquity?.toString() ?? "0";
+    try {
+      await closeAllAndWithdraw(challenge.walletSecretKey, equity);
+    } catch (err) {
+      console.error(`[Pacifica] closeAllAndWithdraw failed for ${challengeId}:`, err);
+    }
+  } else {
+    console.warn(`Challenge ${challengeId} has no walletSecretKey, skipping withdrawal`);
+  }
 
   await prisma.challenge.update({
     where: { id: challengeId },
     data: { status: "FAILED", endedAt: new Date() },
   });
-
-  // TODO: Close all positions on Pacifica (closeAllPositions)
-  // TODO: Call Solana program fail_challenge (callFailChallenge)
 
   console.log(`Challenge ${challengeId} fail sequence complete`);
 }
@@ -23,9 +42,17 @@ export async function handleChallengePassed(challengeId: string) {
 
   if (!challenge) return;
 
-  // TODO: Close all positions on Pacifica (closeAllPositions)
-  // TODO: Wait for settlement, get final realized PnL
-  // TODO: Call Solana program pass_challenge with realized PnL
+  // Close all positions and withdraw funds back to treasury
+  if (challenge.walletSecretKey) {
+    const equity = challenge.currentEquity?.toString() ?? "0";
+    try {
+      await closeAllAndWithdraw(challenge.walletSecretKey, equity);
+    } catch (err) {
+      console.error(`[Pacifica] closeAllAndWithdraw failed for ${challengeId}:`, err);
+    }
+  } else {
+    console.warn(`Challenge ${challengeId} has no walletSecretKey, skipping withdrawal`);
+  }
 
   await prisma.challenge.update({
     where: { id: challengeId },

@@ -389,6 +389,16 @@ export class PacificaClient {
     return this.signedPost("/positions/tpsl", "set_position_tpsl", payload);
   }
 
+  // ─── Withdraw ──────────────────────────────────────────────
+
+  /**
+   * Withdraw funds from Pacifica vault back to the wallet's on-chain token account.
+   */
+  async withdraw(amount: string): Promise<PacificaResponse> {
+    const payload: Record<string, unknown> = { amount };
+    return this.signedPost("/account/withdraw", "withdraw", payload);
+  }
+
   // ─── Referral ──────────────────────────────────────────────
 
   /**
