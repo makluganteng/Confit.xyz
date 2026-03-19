@@ -208,17 +208,64 @@ export async function placeOrder(params: OrderParams): Promise<OrderResult> {
   const pacificaSide = params.side === "long" ? "bid" : "ask";
   const symbol = params.pair.replace("-PERP", "");
 
+  // Fetch current price to convert USD size to asset quantity
+  // Pacifica expects amount in asset units (e.g., SOL), not USD
+  let assetPrice = params.limitPrice;
+  if (!assetPrice) {
+    try {
+      const infoRes = await fetch("https://test-api.pacifica.fi/api/v1/info");
+      const infoJson = await infoRes.json();
+      // Get mark price from kline (last candle close)
+      const klineRes = await fetch(
+        `https://test-api.pacifica.fi/api/v1/kline?symbol=${symbol}&interval=1m&start_time=${Date.now() - 120000}`
+      );
+      const klineJson = await klineRes.json();
+      if (klineJson.success && klineJson.data?.length > 0) {
+        assetPrice = parseFloat(klineJson.data[klineJson.data.length - 1].c);
+      }
+    } catch {
+      // fallback — will fail at Pacifica if price is wrong
+    }
+  }
+
+  if (!assetPrice || assetPrice <= 0) {
+    throw new Error("Could not determine asset price for order sizing");
+  }
+
+  // Convert USD amount to asset quantity
+  // size is in USD, we need asset units
+  const assetAmount = params.size / assetPrice;
+
+  // Get lot size from /info to round properly
+  let lotSize = 0.01; // default
+  try {
+    const infoRes = await fetch("https://test-api.pacifica.fi/api/v1/info");
+    const infoJson = await infoRes.json();
+    const symbolInfo = infoJson.data?.find((s: any) => s.symbol === symbol);
+    if (symbolInfo) {
+      lotSize = parseFloat(symbolInfo.lot_size);
+    }
+  } catch { /* use default */ }
+
+  // Round to lot size
+  const roundedAmount = Math.floor(assetAmount / lotSize) * lotSize;
+  if (roundedAmount <= 0) {
+    throw new Error(`Order too small. Minimum lot size is ${lotSize} ${symbol}`);
+  }
+
+  console.log(`[Pacifica] Order: ${params.size} USD → ${roundedAmount} ${symbol} @ ~$${assetPrice}`);
+
   let result;
   if (params.orderType === "market") {
     result = await client.createMarketOrder({
       symbol,
-      amount: params.size.toString(),
+      amount: roundedAmount.toString(),
       side: pacificaSide,
     });
   } else {
     result = await client.createLimitOrder({
       symbol,
-      amount: params.size.toString(),
+      amount: roundedAmount.toString(),
       price: params.limitPrice!.toString(),
       side: pacificaSide,
     });

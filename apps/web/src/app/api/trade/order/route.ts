@@ -84,6 +84,67 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // If market order filled immediately, create a position record
+  if (result.status === "filled") {
+    // Get the fill price (use limit price or fetch current price)
+    let fillPrice = limitPrice;
+    if (!fillPrice) {
+      try {
+        const klineRes = await fetch(
+          `https://test-api.pacifica.fi/api/v1/kline?symbol=${pair.replace("-PERP", "")}&interval=1m&start_time=${Date.now() - 120000}`
+        );
+        const klineJson = await klineRes.json();
+        if (klineJson.success && klineJson.data?.length > 0) {
+          fillPrice = parseFloat(klineJson.data[klineJson.data.length - 1].c);
+        }
+      } catch { /* use 0 as fallback */ }
+    }
+    fillPrice = fillPrice || 0;
+
+    // Check if there's an existing open position for same pair + side
+    const existingPosition = await prisma.position.findFirst({
+      where: {
+        challengeId,
+        pair,
+        side: side.toUpperCase() as any,
+        status: "OPEN",
+      },
+    });
+
+    if (existingPosition) {
+      // Add to existing position (average entry price)
+      const existingSize = Number(existingPosition.size);
+      const existingEntry = Number(existingPosition.entryPrice);
+      const newSize = existingSize + size;
+      const avgEntry = (existingEntry * existingSize + fillPrice * size) / newSize;
+
+      await prisma.position.update({
+        where: { id: existingPosition.id },
+        data: {
+          size: newSize,
+          entryPrice: avgEntry,
+          currentPrice: fillPrice,
+          leverage,
+        },
+      });
+    } else {
+      // Create new position
+      await prisma.position.create({
+        data: {
+          challengeId,
+          pair,
+          side: side.toUpperCase() as any,
+          size,
+          leverage,
+          entryPrice: fillPrice,
+          currentPrice: fillPrice,
+          unrealizedPnl: 0,
+          status: "OPEN",
+        },
+      });
+    }
+  }
+
   await publishTradeEvent({
     challenge_id: challengeId,
     order_id: order.id,

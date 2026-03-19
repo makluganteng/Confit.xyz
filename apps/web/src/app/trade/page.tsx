@@ -321,13 +321,35 @@ export default function TradePage() {
     }
   }
 
-  // ── Derived data ─────────────────────────────────────────────────────────
+  // ── Update positions with live prices from WebSocket ─────────────────────
 
-  const totalUnrealizedPnl = positions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
-  const totalMargin = positions.reduce((acc, p) => acc + (p.margin ?? 0), 0);
-  // Use real challenge equity from API when available, fallback to mock
-  const accountEquity = challengeEquity ?? 5000 + totalUnrealizedPnl;
-  const idleBalance = accountEquity - totalMargin;
+  const livePositions = positions.map((p) => {
+    const sym = p.pair.replace("-PERP", "");
+    const symLivePrice = ws.prices.get(sym);
+    const markPrice = symLivePrice?.mark ?? p.currentPrice;
+
+    // Calculate PnL based on side
+    const isLong = p.side.toUpperCase() === "LONG";
+    const priceDiff = isLong ? markPrice - p.entryPrice : p.entryPrice - markPrice;
+    const leverage = p.leverage ?? 1;
+    const unrealizedPnl = (priceDiff / p.entryPrice) * p.size * leverage;
+    const margin = p.size; // margin = position size in USD (1x)
+
+    return {
+      ...p,
+      currentPrice: markPrice,
+      unrealizedPnl,
+      margin,
+    };
+  });
+
+  // ── Derived data (from live positions) ──────────────────────────────────
+
+  const totalUnrealizedPnl = livePositions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
+  const totalMargin = livePositions.reduce((acc, p) => acc + (p.margin ?? 0), 0);
+  const startingCapital = challengeEquity ?? 5000;
+  const accountEquity = startingCapital + totalUnrealizedPnl;
+  const idleBalance = startingCapital - totalMargin;
 
   // ── Open orders filter (PENDING status from Pacifica) ────────────────────
   const pendingOrders = orders.filter(
@@ -507,7 +529,7 @@ export default function TradePage() {
             {/* Tabs */}
             <div className="flex items-center gap-0 border-b border-white/[0.06] px-0 shrink-0">
               {([
-                { key: "positions", label: `Positions (${positions.length})` },
+                { key: "positions", label: `Positions (${livePositions.length})` },
                 { key: "openOrders", label: `Open Orders${pendingOrders.length > 0 ? ` (${pendingOrders.length})` : ""}` },
                 { key: "tradeHistory", label: `Trade History (${orders.length})` },
                 { key: "orderHistory", label: "Order History" },
@@ -544,19 +566,19 @@ export default function TradePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {positions.length === 0 ? (
+                    {livePositions.length === 0 ? (
                       <tr>
                         <td colSpan={9} className="py-8 text-center text-xs text-white/20">
                           No open positions
                         </td>
                       </tr>
                     ) : (
-                      positions.map((pos) => (
+                      livePositions.map((pos) => (
                         <tr key={pos.id} className="border-t border-white/[0.03] hover:bg-white/[0.02] text-xs">
                           <td className="py-1.5 px-3 font-medium text-white">{pos.pair}</td>
                           <td className="py-1.5 px-3">
-                            <span className={`font-medium ${pos.side === "long" ? "text-[#34d399]" : "text-[#f87171]"}`}>
-                              {pos.side === "long" ? "Long" : "Short"}
+                            <span className={`font-medium ${pos.side.toUpperCase() === "LONG" ? "text-[#34d399]" : "text-[#f87171]"}`}>
+                              {pos.side.toUpperCase() === "LONG" ? "Long" : "Short"}
                             </span>
                           </td>
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/80">
@@ -622,8 +644,8 @@ export default function TradePage() {
                         <tr key={o.id} className="border-t border-white/[0.03] hover:bg-white/[0.02] text-xs">
                           <td className="py-1.5 px-3 font-medium text-white">{o.pair}</td>
                           <td className="py-1.5 px-3">
-                            <span className={`font-medium ${o.side === "long" ? "text-[#34d399]" : "text-[#f87171]"}`}>
-                              {o.side === "long" ? "Long" : "Short"}
+                            <span className={`font-medium ${o.side.toUpperCase() === "LONG" ? "text-[#34d399]" : "text-[#f87171]"}`}>
+                              {o.side.toUpperCase() === "LONG" ? "Long" : "Short"}
                             </span>
                           </td>
                           <td className="py-1.5 px-3 text-white/60 capitalize">{o.orderType}</td>
@@ -676,8 +698,8 @@ export default function TradePage() {
                           </td>
                           <td className="py-1.5 px-3 font-medium text-white">{o.pair}</td>
                           <td className="py-1.5 px-3">
-                            <span className={`font-medium ${o.side === "long" ? "text-[#34d399]" : "text-[#f87171]"}`}>
-                              {o.side === "long" ? "Long" : "Short"}
+                            <span className={`font-medium ${o.side.toUpperCase() === "LONG" ? "text-[#34d399]" : "text-[#f87171]"}`}>
+                              {o.side.toUpperCase() === "LONG" ? "Long" : "Short"}
                             </span>
                           </td>
                           <td className="py-1.5 px-3 text-white/60 capitalize">{o.orderType}</td>
@@ -728,8 +750,8 @@ export default function TradePage() {
                           </td>
                           <td className="py-1.5 px-3 font-medium text-white">{o.pair}</td>
                           <td className="py-1.5 px-3">
-                            <span className={`font-medium ${o.side === "long" ? "text-[#34d399]" : "text-[#f87171]"}`}>
-                              {o.side === "long" ? "Long" : "Short"}
+                            <span className={`font-medium ${o.side.toUpperCase() === "LONG" ? "text-[#34d399]" : "text-[#f87171]"}`}>
+                              {o.side.toUpperCase() === "LONG" ? "Long" : "Short"}
                             </span>
                           </td>
                           <td className="py-1.5 px-3 text-white/60 capitalize">{o.orderType}</td>
@@ -963,27 +985,34 @@ export default function TradePage() {
 
               {/* Leverage input */}
               <div>
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-2">
                   <label className="text-[10px] text-white/30 uppercase tracking-wider">Leverage</label>
-                  <span className="font-[family-name:var(--font-mono)] text-xs text-white/60">{leverageInput}x</span>
+                  <div className="flex items-center gap-1 bg-white/[0.04] border border-white/[0.06] px-2 py-0.5">
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={leverageInput}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "" || (Number(v) >= 1 && Number(v) <= 50)) setLeverageInput(v);
+                      }}
+                      className="w-8 bg-transparent text-right font-[family-name:var(--font-mono)] text-xs text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    />
+                    <span className="text-[10px] text-white/30">x</span>
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="50"
-                  step="1"
-                  value={leverageInput}
-                  onChange={(e) => setLeverageInput(e.target.value)}
-                  className="w-full h-1 bg-white/[0.06] appearance-none cursor-pointer accent-emerald-400 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-400"
-                />
-                <div className="flex justify-between mt-0.5">
-                  {[1, 5, 10, 25, 50].map((lv) => (
+                {/* Quick-select buttons as the primary control */}
+                <div className="flex gap-1">
+                  {[1, 2, 3, 5, 10, 15, 20, 25, 50].map((lv) => (
                     <button
                       key={lv}
                       type="button"
                       onClick={() => setLeverageInput(String(lv))}
-                      className={`text-[9px] font-[family-name:var(--font-mono)] transition-colors ${
-                        leverageInput === String(lv) ? "text-emerald-400" : "text-white/20 hover:text-white/40"
+                      className={`flex-1 py-1 text-[9px] font-[family-name:var(--font-mono)] transition-all border ${
+                        Math.round(Number(leverageInput)) === lv
+                          ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/20"
+                          : "text-white/25 hover:text-white/50 hover:bg-white/[0.03] border-white/[0.04]"
                       }`}
                     >
                       {lv}x
