@@ -85,6 +85,25 @@ export default function TradePage() {
   const [challengeEquity, setChallengeEquity] = useState<number | null>(null);
   const [challengeStartingCapital, setChallengeStartingCapital] = useState<number | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
+
+  // Pacifica account data (real source of truth)
+  const [pacificaAccount, setPacificaAccount] = useState<{
+    accountEquity: string;
+    balance: string;
+    availableToSpend: string;
+    totalMarginUsed: string;
+    positionsCount: number;
+  } | null>(null);
+  const [pacificaPositions, setPacificaPositions] = useState<{
+    symbol: string;
+    pair: string;
+    side: string;
+    amount: string;
+    entryPrice: string;
+    margin: string;
+    funding: string;
+    liquidationPrice: string;
+  }[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [orderSuccess, setOrderSuccess] = useState<string | null>(null);
@@ -168,8 +187,8 @@ export default function TradePage() {
             setChallengeEquity(Number(challenge.currentEquity));
           }
 
-          const [posRes, histRes] = await Promise.all([
-            fetch(`/api/trade/positions?challengeId=${challenge.id}`, {
+          const [pacAccRes, histRes] = await Promise.all([
+            fetch(`/api/trade/pacifica-account`, {
               headers: { Authorization: `Bearer ${token}` },
             }),
             fetch(`/api/trade/history?challengeId=${challenge.id}`, {
@@ -177,23 +196,15 @@ export default function TradePage() {
             }),
           ]);
 
-          if (posRes.ok) {
-            const posData = await posRes.json();
-            setPositions(
-              posData.positions.map((p: any) => ({
-                id: p.id,
-                pair: p.pair,
-                side: p.side,
-                size: Number(p.size),
-                entryPrice: Number(p.entryPrice),
-                currentPrice: Number(p.currentPrice),
-                unrealizedPnl: Number(p.unrealizedPnl),
-                margin: p.margin ? Number(p.margin) : undefined,
-                leverage: p.leverage ? Number(p.leverage) : undefined,
-                tp: p.tp ? Number(p.tp) : null,
-                sl: p.sl ? Number(p.sl) : null,
-              }))
-            );
+          // Pacifica account + positions (real source of truth)
+          if (pacAccRes.ok) {
+            const pacData = await pacAccRes.json();
+            if (pacData.account) {
+              setPacificaAccount(pacData.account);
+            }
+            if (pacData.positions) {
+              setPacificaPositions(pacData.positions);
+            }
           }
 
           if (histRes.ok) {
@@ -362,39 +373,52 @@ export default function TradePage() {
     }
   }
 
-  // ── Update positions with live prices from WebSocket ─────────────────────
+  // ── Build positions from Pacifica data with live WS mark prices ──────────
 
-  const livePositions = positions.map((p) => {
-    const sym = p.pair.replace("-PERP", "");
-    const symLivePrice = ws.prices.get(sym);
-    const markPrice = symLivePrice?.mark ?? p.currentPrice;
+  const livePositions = pacificaPositions.map((p, i) => {
+    const symLivePrice = ws.prices.get(p.symbol);
+    const markPrice = symLivePrice?.mark ?? parseFloat(p.entryPrice);
+    const entryPrice = parseFloat(p.entryPrice);
+    const amount = parseFloat(p.amount);
+    const notionalSize = amount * entryPrice;
 
-    // Calculate PnL based on side
-    const isLong = p.side.toUpperCase() === "LONG";
-    const priceDiff = isLong ? markPrice - p.entryPrice : p.entryPrice - markPrice;
-    const leverage = p.leverage ?? 1;
-    const unrealizedPnl = (priceDiff / p.entryPrice) * p.size * leverage;
-    // margin = collateral put up = notional size / leverage
-    const margin = p.size / leverage;
+    const isLong = p.side === "LONG";
+    const priceDiff = isLong ? markPrice - entryPrice : entryPrice - markPrice;
+    const unrealizedPnl = priceDiff * amount;
+    const margin = parseFloat(p.margin) || notionalSize * 0.1; // fallback 10%
 
     return {
-      ...p,
+      id: `pac-${i}`,
+      pair: p.pair,
+      side: p.side,
+      size: notionalSize,
+      entryPrice,
       currentPrice: markPrice,
       unrealizedPnl,
       margin,
-      leverage,
+      leverage: margin > 0 ? Math.round(notionalSize / margin) : 1,
+      liquidationPrice: parseFloat(p.liquidationPrice) || undefined,
+      funding: parseFloat(p.funding) || 0,
+      tp: null as number | null,
+      sl: null as number | null,
     };
   });
 
-  // ── Derived data (from live positions) ──────────────────────────────────
+  // ── Account data from Pacifica (real source of truth) ──────────────────
 
   const totalUnrealizedPnl = livePositions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
-  const totalMargin = livePositions.reduce((acc, p) => acc + (p.margin ?? 0), 0);
-  // startingCapital is the challenge's original capital (e.g. 5000 or 10000)
-  // Only fall back to 5000 if there's truly no challenge data
-  const startingCapital = challengeStartingCapital ?? (challengeEquity ?? 5000);
-  const accountEquity = startingCapital + totalUnrealizedPnl;
-  const idleBalance = startingCapital - totalMargin;
+  const totalMargin = livePositions.reduce((acc, p) => acc + p.margin, 0);
+
+  // Use Pacifica account data when available, fallback to challenge DB data
+  const accountEquity = pacificaAccount
+    ? parseFloat(pacificaAccount.accountEquity)
+    : (challengeStartingCapital ?? 5000) + totalUnrealizedPnl;
+  const idleBalance = pacificaAccount
+    ? parseFloat(pacificaAccount.availableToSpend)
+    : accountEquity - totalMargin;
+  const pacificaMarginUsed = pacificaAccount
+    ? parseFloat(pacificaAccount.totalMarginUsed)
+    : totalMargin;
 
   // ── Open orders filter (PENDING status from Pacifica) ────────────────────
   const pendingOrders = orders.filter(
@@ -607,14 +631,15 @@ export default function TradePage() {
                       <th className="text-right py-1.5 px-3 font-medium">Mark</th>
                       <th className="text-right py-1.5 px-3 font-medium">PnL</th>
                       <th className="text-right py-1.5 px-3 font-medium">Margin</th>
-                      <th className="text-right py-1.5 px-3 font-medium">TP / SL</th>
+                      <th className="text-right py-1.5 px-3 font-medium">Liq Price</th>
+                      <th className="text-right py-1.5 px-3 font-medium">Funding</th>
                       <th className="text-right py-1.5 px-3 font-medium">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {livePositions.length === 0 ? (
                       <tr>
-                        <td colSpan={10} className="py-8 text-center text-xs text-white/20">
+                        <td colSpan={11} className="py-8 text-center text-xs text-white/20">
                           No open positions
                         </td>
                       </tr>
@@ -648,9 +673,12 @@ export default function TradePage() {
                             {pos.margin != null ? `$${pos.margin.toFixed(2)}` : "--"}
                           </td>
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/40 text-[10px]">
-                            {pos.tp || pos.sl
-                              ? `${pos.tp ? `$${fmtPrice(pos.tp)}` : "--"} / ${pos.sl ? `$${fmtPrice(pos.sl)}` : "--"}`
-                              : "--"}
+                            {pos.liquidationPrice ? `$${fmtPrice(pos.liquidationPrice)}` : "--"}
+                          </td>
+                          <td className={`py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-[10px] ${
+                            (pos.funding ?? 0) >= 0 ? "text-[#34d399]" : "text-[#f87171]"
+                          }`}>
+                            {pos.funding ? `$${pos.funding.toFixed(4)}` : "--"}
                           </td>
                           <td className="py-1.5 px-3 text-right">
                             <button
@@ -1194,8 +1222,8 @@ export default function TradePage() {
                 { label: "Account Equity", value: `$${accountEquity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, color: "text-white" },
                 { label: "Idle Balance", value: `$${idleBalance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, color: "text-white/60" },
                 { label: "Unrealized PnL", value: fmtPnl(totalUnrealizedPnl), color: totalUnrealizedPnl >= 0 ? "text-[#34d399]" : "text-[#f87171]" },
-                { label: "Total Fees", value: "$0.00", color: "text-white/40" },
-                { label: "Margin Used", value: `$${totalMargin.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, color: "text-white/40" },
+                { label: "Margin Used", value: `$${pacificaMarginUsed.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, color: "text-white/40" },
+                { label: "Balance", value: `$${pacificaAccount ? parseFloat(pacificaAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "--"}`, color: "text-white/40" },
               ].map((row) => (
                 <div key={row.label} className="flex items-center justify-between">
                   <span className="text-[10px] text-white/30">{row.label}</span>
