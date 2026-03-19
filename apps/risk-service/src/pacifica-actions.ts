@@ -19,7 +19,7 @@ import {
   TESTNET_WS,
   TESTNET_USDC_MINT,
   USDC_MINT,
-} from "@confit/pacifica-sdk/src/index.js";
+} from "@confit/pacifica-sdk";
 
 const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
 const USE_TESTNET = process.env.PACIFICA_TESTNET !== "false";

@@ -8,6 +8,8 @@ import {
 } from "./challenge-manager";
 import { POLL_INTERVAL_MS, SNAPSHOT_PERSIST_INTERVAL_MS } from "./config";
 
+const PACIFICA_API = "https://test-api.pacifica.fi/api/v1";
+
 const snapshots = new Map<string, TraderSnapshot>();
 
 export async function startMonitor(redisUrl: string) {
@@ -61,6 +63,7 @@ export async function startMonitor(redisUrl: string) {
           },
         });
 
+        // Update challenge equity in DB with real Pacifica equity
         await prisma.challenge.update({
           where: { id: challengeId },
           data: { currentEquity: snapshot.currentEquity },
@@ -89,16 +92,68 @@ async function pollAndEvaluate(challengeId: string, consumer: RedisConsumer) {
       where: { id: challengeId },
     });
 
-    if (!challenge || challenge.status !== "ACTIVE") {
+    if (!challenge || challenge.status !== "ACTIVE" || !challenge.walletPublicKey) {
       snapshots.delete(challengeId);
       return;
     }
 
-    // TODO: Replace with actual Pacifica data via getSubaccountInfo()
-    const positions = await prisma.position.findMany({
-      where: { challengeId, status: "OPEN" },
-    });
+    const walletPubkey = challenge.walletPublicKey;
 
+    // Fetch REAL data from Pacifica
+    let pacificaEquity = Number(challenge.currentEquity);
+    let pacificaPositions: { pair: string; side: string; size: number; leverage: number; unrealizedPnl: number }[] = [];
+
+    try {
+      const [accountRes, positionsRes] = await Promise.all([
+        fetch(`${PACIFICA_API}/account?account=${walletPubkey}`),
+        fetch(`${PACIFICA_API}/positions?account=${walletPubkey}`),
+      ]);
+
+      const accountJson = await accountRes.json();
+      const positionsJson = await positionsRes.json();
+
+      if (accountJson.success && accountJson.data) {
+        pacificaEquity = parseFloat(accountJson.data.account_equity);
+      }
+
+      if (positionsJson.success && Array.isArray(positionsJson.data)) {
+        pacificaPositions = positionsJson.data.map((p: any) => {
+          const entryPrice = parseFloat(p.entry_price);
+          const amount = parseFloat(p.amount);
+          const notionalSize = amount * entryPrice;
+          const margin = parseFloat(p.margin) || notionalSize * 0.1;
+          const leverage = margin > 0 ? notionalSize / margin : 1;
+
+          // Estimate unrealized PnL from equity vs balance
+          // (Pacifica doesn't give per-position PnL directly in this endpoint)
+          return {
+            pair: `${p.symbol}-PERP`,
+            side: p.side === "bid" ? "LONG" : "SHORT",
+            size: notionalSize,
+            leverage,
+            unrealizedPnl: 0, // Will be calculated from equity diff
+          };
+        });
+      }
+    } catch (err) {
+      console.error(`[Risk] Failed to fetch Pacifica data for ${walletPubkey}:`, err);
+      // Fall back to DB data if Pacifica is unreachable
+    }
+
+    // Calculate total unrealized PnL from equity difference
+    const startingCapital = Number(challenge.startingCapital);
+    const totalUnrealizedPnl = pacificaEquity - startingCapital;
+
+    // Distribute PnL across positions proportionally (approximation)
+    if (pacificaPositions.length > 0) {
+      const pnlPerPosition = totalUnrealizedPnl / pacificaPositions.length;
+      pacificaPositions = pacificaPositions.map(p => ({
+        ...p,
+        unrealizedPnl: pnlPerPosition,
+      }));
+    }
+
+    // Build daily PnL history from risk snapshots
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const recentSnapshots = await prisma.riskSnapshot.findMany({
       where: { challengeId, timestamp: { gte: oneDayAgo } },
@@ -107,30 +162,25 @@ async function pollAndEvaluate(challengeId: string, consumer: RedisConsumer) {
 
     const dailyPnlHistory = recentSnapshots.map((s: { timestamp: Date; equity: unknown }) => ({
       timestamp: s.timestamp.getTime(),
-      pnl: Number(s.equity) - Number(challenge.startingCapital),
+      pnl: Number(s.equity) - startingCapital,
     }));
 
     const snapshot: TraderSnapshot = {
       challengeId,
       tier: challenge.tier as any,
-      startingCapital: Number(challenge.startingCapital),
-      currentEquity: Number(challenge.currentEquity),
+      startingCapital,
+      currentEquity: pacificaEquity,
       realizedPnl: Number(challenge.realizedPnl),
       dailyPnlHistory,
-      positions: positions.map((p: { pair: string; side: string; size: unknown; leverage: unknown; unrealizedPnl: unknown }) => ({
-        pair: p.pair,
-        side: p.side,
-        size: Number(p.size),
-        leverage: Number(p.leverage),
-        unrealizedPnl: Number(p.unrealizedPnl),
-      })),
+      positions: pacificaPositions,
     };
 
     snapshots.set(challengeId, snapshot);
 
     const violation = evaluateRisk(snapshot);
     if (violation) {
-      console.log(`VIOLATION: ${violation.eventType} for ${challengeId}`);
+      console.log(`[Risk] VIOLATION: ${violation.eventType} for challenge ${challengeId}`);
+      console.log(`[Risk] Equity: $${pacificaEquity.toFixed(2)} / Starting: $${startingCapital} / Drawdown: ${((startingCapital - pacificaEquity) / startingCapital * 100).toFixed(2)}%`);
 
       await consumer.publishRiskEvent({
         challenge_id: violation.challengeId,
@@ -140,9 +190,11 @@ async function pollAndEvaluate(challengeId: string, consumer: RedisConsumer) {
       });
 
       if (violation.action === "challenge_failed") {
+        console.log(`[Risk] Challenge ${challengeId} FAILED — executing end sequence`);
         await handleChallengeFailed(challengeId);
         snapshots.delete(challengeId);
       } else if (violation.action === "challenge_passed") {
+        console.log(`[Risk] Challenge ${challengeId} PASSED — executing end sequence`);
         await handleChallengePassed(challengeId);
         snapshots.delete(challengeId);
       }

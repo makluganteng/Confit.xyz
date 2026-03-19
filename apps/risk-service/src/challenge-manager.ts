@@ -13,16 +13,32 @@ export async function handleChallengeFailed(challengeId: string) {
     return;
   }
 
+  // Get real balance from Pacifica before closing
+  let withdrawAmount = "0";
+  if (challenge.walletPublicKey) {
+    try {
+      const res = await fetch(`https://test-api.pacifica.fi/api/v1/account?account=${challenge.walletPublicKey}`);
+      const json = await res.json();
+      if (json.success && json.data) {
+        withdrawAmount = json.data.balance;
+        // Update DB with real final equity
+        await prisma.challenge.update({
+          where: { id: challengeId },
+          data: { currentEquity: parseFloat(json.data.account_equity) },
+        });
+      }
+    } catch (err) {
+      console.error(`[Pacifica] Failed to fetch account for ${challengeId}:`, err);
+    }
+  }
+
   // Close all positions and withdraw funds back to treasury
   if (challenge.walletSecretKey) {
-    const equity = challenge.currentEquity?.toString() ?? "0";
     try {
-      await closeAllAndWithdraw(challenge.walletSecretKey, equity);
+      await closeAllAndWithdraw(challenge.walletSecretKey, withdrawAmount);
     } catch (err) {
       console.error(`[Pacifica] closeAllAndWithdraw failed for ${challengeId}:`, err);
     }
-  } else {
-    console.warn(`Challenge ${challengeId} has no walletSecretKey, skipping withdrawal`);
   }
 
   await prisma.challenge.update({
@@ -42,16 +58,31 @@ export async function handleChallengePassed(challengeId: string) {
 
   if (!challenge) return;
 
+  // Get real balance from Pacifica before closing
+  let withdrawAmount = "0";
+  if (challenge.walletPublicKey) {
+    try {
+      const res = await fetch(`https://test-api.pacifica.fi/api/v1/account?account=${challenge.walletPublicKey}`);
+      const json = await res.json();
+      if (json.success && json.data) {
+        withdrawAmount = json.data.balance;
+        await prisma.challenge.update({
+          where: { id: challengeId },
+          data: { currentEquity: parseFloat(json.data.account_equity) },
+        });
+      }
+    } catch (err) {
+      console.error(`[Pacifica] Failed to fetch account for ${challengeId}:`, err);
+    }
+  }
+
   // Close all positions and withdraw funds back to treasury
   if (challenge.walletSecretKey) {
-    const equity = challenge.currentEquity?.toString() ?? "0";
     try {
-      await closeAllAndWithdraw(challenge.walletSecretKey, equity);
+      await closeAllAndWithdraw(challenge.walletSecretKey, withdrawAmount);
     } catch (err) {
       console.error(`[Pacifica] closeAllAndWithdraw failed for ${challengeId}:`, err);
     }
-  } else {
-    console.warn(`Challenge ${challengeId} has no walletSecretKey, skipping withdrawal`);
   }
 
   await prisma.challenge.update({
