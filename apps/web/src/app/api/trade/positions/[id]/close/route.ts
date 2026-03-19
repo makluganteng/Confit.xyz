@@ -38,10 +38,35 @@ export async function POST(
     reduceOnly: true,
   });
 
-  const updated = await prisma.position.update({
-    where: { id },
-    data: { status: "CLOSED", closedAt: new Date() },
-  });
+  // Calculate realized PnL based on current vs entry price
+  const currentPrice = Number(position.currentPrice);
+  const entryPrice = Number(position.entryPrice);
+  const size = Number(position.size);
+  const leverage = Number(position.leverage);
+  const isLong = position.side === "LONG";
+  const priceDiff = isLong ? currentPrice - entryPrice : entryPrice - currentPrice;
+  const realizedPnl = (priceDiff / entryPrice) * size * leverage;
+
+  const now = new Date();
+
+  // Update position and challenge realized PnL + equity in a transaction
+  const [updated] = await prisma.$transaction([
+    prisma.position.update({
+      where: { id },
+      data: { status: "CLOSED", closedAt: now },
+    }),
+    prisma.challenge.update({
+      where: { id: position.challengeId },
+      data: {
+        realizedPnl: {
+          increment: realizedPnl,
+        },
+        currentEquity: {
+          increment: realizedPnl,
+        },
+      },
+    }),
+  ]);
 
   return NextResponse.json({ position: updated });
 }

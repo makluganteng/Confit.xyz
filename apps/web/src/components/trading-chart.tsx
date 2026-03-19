@@ -8,6 +8,9 @@ interface TradingChartProps {
   timeframe?: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CandleSeries = any;
+
 const TF_MAP: Record<string, string> = {
   "1m": "1m",
   "5m": "5m",
@@ -33,6 +36,7 @@ const PACIFICA_API = "https://test-api.pacifica.fi/api/v1";
 export default function TradingChart({ symbol, timeframe = "15m" }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartWrapperRef = useRef<HTMLDivElement | null>(null);
+  const candleSeriesRef = useRef<CandleSeries | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +48,7 @@ export default function TradingChart({ symbol, timeframe = "15m" }: TradingChart
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let chart: any = null;
     let ro: ResizeObserver | null = null;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
 
     // Create a dedicated wrapper div for the chart — avoids React DOM conflicts
     const wrapper = document.createElement("div");
@@ -152,6 +157,9 @@ export default function TradingChart({ symbol, timeframe = "15m" }: TradingChart
 
         chart.timeScale().fitContent();
 
+        // Store candleSeries ref so polling can access it
+        candleSeriesRef.current = candleSeries;
+
         ro = new ResizeObserver((entries) => {
           for (const entry of entries) {
             if (chart) {
@@ -163,6 +171,39 @@ export default function TradingChart({ symbol, timeframe = "15m" }: TradingChart
           }
         });
         ro.observe(wrapper);
+
+        // Poll for the latest candle every 30s and update chart
+        const apiInterval = TF_MAP[timeframe] ?? "15m";
+        pollInterval = setInterval(async () => {
+          if (cancelled || !candleSeriesRef.current) return;
+          try {
+            // Fetch just the most recent candle (last 2 intervals to catch the current open bar)
+            const now = Date.now();
+            const tfMs: Record<string, number> = {
+              "1m": 60_000, "5m": 300_000, "15m": 900_000,
+              "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+            };
+            const barMs = tfMs[apiInterval] ?? 900_000;
+            const recentStart = now - barMs * 3;
+            const pollUrl = `${PACIFICA_API}/kline?symbol=${symbol}&interval=${apiInterval}&start_time=${recentStart}`;
+            const pollRes = await fetch(pollUrl);
+            const pollJson = await pollRes.json();
+            if (!pollJson.success || !pollJson.data?.length) return;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const latestRaw = pollJson.data[pollJson.data.length - 1] as any;
+            const latestCandle = {
+              time: Math.floor(latestRaw.t / 1000),
+              open: parseFloat(latestRaw.o),
+              high: parseFloat(latestRaw.h),
+              low: parseFloat(latestRaw.l),
+              close: parseFloat(latestRaw.c),
+            };
+            if (!cancelled && candleSeriesRef.current) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              candleSeriesRef.current.update(latestCandle as any);
+            }
+          } catch { /* ignore poll errors */ }
+        }, 30_000);
 
         setLoading(false);
         setError(null);
@@ -179,6 +220,8 @@ export default function TradingChart({ symbol, timeframe = "15m" }: TradingChart
 
     return () => {
       cancelled = true;
+      if (pollInterval) clearInterval(pollInterval);
+      candleSeriesRef.current = null;
       ro?.disconnect();
       if (chart) {
         try { chart.remove(); } catch { /* ignore */ }

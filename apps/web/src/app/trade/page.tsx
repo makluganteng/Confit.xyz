@@ -83,6 +83,7 @@ export default function TradePage() {
   const { ready, authenticated, getAccessToken } = usePrivy();
   const [challengeId, setChallengeId] = useState<string | null>(null);
   const [challengeEquity, setChallengeEquity] = useState<number | null>(null);
+  const [challengeStartingCapital, setChallengeStartingCapital] = useState<number | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +116,18 @@ export default function TradePage() {
   const [obTickDropdownOpen, setObTickDropdownOpen] = useState(false);
   const tickSize = TICK_SIZES[tickSizeIdx];
 
+  // ── Order book / Trades panel tab ──────────────────────────────────
+  const [obTab, setObTab] = useState<"orderBook" | "trades">("orderBook");
+
+  // ── Recent trades from Pacifica ────────────────────────────────────
+  interface RecentTrade {
+    price: string;
+    amount: string;
+    side: string;
+    created_at: number;
+  }
+  const [recentTrades, setRecentTrades] = useState<RecentTrade[]>([]);
+
   // Tick size dropdown and order book config are used by the UI below
   // Real order book data is fetched via useOrderBook hook
 
@@ -132,7 +145,7 @@ export default function TradePage() {
   const livePriceColor = live24hChange >= 0 ? "text-[#34d399]" : "text-[#f87171]";
 
   // ── Real order book from Pacifica REST (polled every 1s) ───────────
-  const orderBook = useOrderBook(currentSymbol.symbol, 1000);
+  const orderBook = useOrderBook(currentSymbol.symbol, 1000, tickSize);
 
   // ── Data fetching (preserved from original) ──────────────────────────────
 
@@ -148,6 +161,9 @@ export default function TradePage() {
         const { challenge } = await challengeRes.json();
         if (challenge) {
           setChallengeId(challenge.id);
+          if (challenge.startingCapital != null) {
+            setChallengeStartingCapital(Number(challenge.startingCapital));
+          }
           if (challenge.currentEquity != null) {
             setChallengeEquity(Number(challenge.currentEquity));
           }
@@ -212,6 +228,31 @@ export default function TradePage() {
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, [authenticated, challengeId, fetchData]);
+
+  // ── Fetch recent trades when Trades tab is active ─────────────────────────
+  useEffect(() => {
+    if (obTab !== "trades") return;
+    let active = true;
+
+    async function fetchTrades() {
+      try {
+        const res = await fetch(
+          `https://test-api.pacifica.fi/api/v1/trades?symbol=${currentSymbol.symbol}&limit=50`
+        );
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data) && active) {
+          setRecentTrades(json.data);
+        }
+      } catch { /* ignore */ }
+    }
+
+    fetchTrades();
+    const interval = setInterval(fetchTrades, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [obTab, currentSymbol.symbol]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
@@ -333,13 +374,15 @@ export default function TradePage() {
     const priceDiff = isLong ? markPrice - p.entryPrice : p.entryPrice - markPrice;
     const leverage = p.leverage ?? 1;
     const unrealizedPnl = (priceDiff / p.entryPrice) * p.size * leverage;
-    const margin = p.size; // margin = position size in USD (1x)
+    // margin = collateral put up = notional size / leverage
+    const margin = p.size / leverage;
 
     return {
       ...p,
       currentPrice: markPrice,
       unrealizedPnl,
       margin,
+      leverage,
     };
   });
 
@@ -347,7 +390,9 @@ export default function TradePage() {
 
   const totalUnrealizedPnl = livePositions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
   const totalMargin = livePositions.reduce((acc, p) => acc + (p.margin ?? 0), 0);
-  const startingCapital = challengeEquity ?? 5000;
+  // startingCapital is the challenge's original capital (e.g. 5000 or 10000)
+  // Only fall back to 5000 if there's truly no challenge data
+  const startingCapital = challengeStartingCapital ?? (challengeEquity ?? 5000);
   const accountEquity = startingCapital + totalUnrealizedPnl;
   const idleBalance = startingCapital - totalMargin;
 
@@ -557,6 +602,7 @@ export default function TradePage() {
                       <th className="text-left py-1.5 px-3 font-medium">Token</th>
                       <th className="text-left py-1.5 px-3 font-medium">Side</th>
                       <th className="text-right py-1.5 px-3 font-medium">Size</th>
+                      <th className="text-right py-1.5 px-3 font-medium">Lev</th>
                       <th className="text-right py-1.5 px-3 font-medium">Entry</th>
                       <th className="text-right py-1.5 px-3 font-medium">Mark</th>
                       <th className="text-right py-1.5 px-3 font-medium">PnL</th>
@@ -568,7 +614,7 @@ export default function TradePage() {
                   <tbody>
                     {livePositions.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="py-8 text-center text-xs text-white/20">
+                        <td colSpan={10} className="py-8 text-center text-xs text-white/20">
                           No open positions
                         </td>
                       </tr>
@@ -584,6 +630,9 @@ export default function TradePage() {
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/80">
                             ${pos.size.toLocaleString()}
                           </td>
+                          <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/60">
+                            {pos.leverage ? `${pos.leverage}x` : "--"}
+                          </td>
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/80">
                             ${fmtPrice(pos.entryPrice)}
                           </td>
@@ -596,7 +645,7 @@ export default function TradePage() {
                             {fmtPnl(pos.unrealizedPnl)}
                           </td>
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/60">
-                            {pos.margin ? `$${pos.margin.toFixed(2)}` : "--"}
+                            {pos.margin != null ? `$${pos.margin.toFixed(2)}` : "--"}
                           </td>
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/40 text-[10px]">
                             {pos.tp || pos.sl
@@ -784,106 +833,154 @@ export default function TradePage() {
           {/* Tabs: Order Book / Trades */}
           <div className="flex items-center justify-between border-b border-white/[0.06] shrink-0">
             <div className="flex items-center">
-              <button className="px-3 py-1.5 text-xs font-medium text-white border-b-2 border-emerald-400">
+              <button
+                onClick={() => setObTab("orderBook")}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  obTab === "orderBook" ? "text-white border-emerald-400" : "text-white/30 border-transparent hover:text-white/50"
+                }`}
+              >
                 Order Book
               </button>
-              <button className="px-3 py-1.5 text-xs font-medium text-white/30 border-b-2 border-transparent hover:text-white/50">
+              <button
+                onClick={() => setObTab("trades")}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  obTab === "trades" ? "text-white border-emerald-400" : "text-white/30 border-transparent hover:text-white/50"
+                }`}
+              >
                 Trades
               </button>
             </div>
           </div>
 
-          {/* Tick size selector + column headers */}
-          <div className="flex items-center justify-between px-3 py-1 shrink-0">
-            <div className="relative">
-              <button
-                onClick={() => setObTickDropdownOpen(!obTickDropdownOpen)}
-                className="flex items-center gap-1 text-[10px] font-[family-name:var(--font-mono)] text-white/50 hover:text-white/80 transition-colors"
-              >
-                {tickSize.toFixed(2)}
-                <svg className="w-2.5 h-2.5" viewBox="0 0 10 10" fill="currentColor">
-                  <path d="M2 4L5 7L8 4" stroke="currentColor" strokeWidth="1.5" fill="none" />
-                </svg>
-              </button>
-              {obTickDropdownOpen && (
-                <div className="absolute top-full left-0 mt-1 bg-[#0d1117] border border-white/10 shadow-xl z-50">
-                  {TICK_SIZES.map((t, i) => (
-                    <button
-                      key={t}
-                      onClick={() => { setTickSizeIdx(i); setObTickDropdownOpen(false); }}
-                      className={`block w-full px-3 py-1 text-left text-[10px] font-[family-name:var(--font-mono)] transition-colors ${
-                        i === tickSizeIdx ? "text-emerald-400 bg-emerald-400/5" : "text-white/50 hover:bg-white/[0.04] hover:text-white/80"
-                      }`}
-                    >
-                      {t.toFixed(2)}
-                    </button>
-                  ))}
+          {obTab === "orderBook" ? (
+            <>
+              {/* Tick size selector + column headers */}
+              <div className="flex items-center justify-between px-3 py-1 shrink-0">
+                <div className="relative">
+                  <button
+                    onClick={() => setObTickDropdownOpen(!obTickDropdownOpen)}
+                    className="flex items-center gap-1 text-[10px] font-[family-name:var(--font-mono)] text-white/50 hover:text-white/80 transition-colors"
+                  >
+                    {tickSize.toFixed(2)}
+                    <svg className="w-2.5 h-2.5" viewBox="0 0 10 10" fill="currentColor">
+                      <path d="M2 4L5 7L8 4" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                    </svg>
+                  </button>
+                  {obTickDropdownOpen && (
+                    <div className="absolute top-full left-0 mt-1 bg-[#0d1117] border border-white/10 shadow-xl z-50">
+                      {TICK_SIZES.map((t, i) => (
+                        <button
+                          key={t}
+                          onClick={() => { setTickSizeIdx(i); setObTickDropdownOpen(false); }}
+                          className={`block w-full px-3 py-1 text-left text-[10px] font-[family-name:var(--font-mono)] transition-colors ${
+                            i === tickSizeIdx ? "text-emerald-400 bg-emerald-400/5" : "text-white/50 hover:bg-white/[0.04] hover:text-white/80"
+                          }`}
+                        >
+                          {t.toFixed(2)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
+                <div className="flex items-center gap-0">
+                  <span className="w-16 text-right text-[10px] text-white/20 uppercase tracking-wider">Size (USD)</span>
+                  <span className="w-20 text-right text-[10px] text-white/20 uppercase tracking-wider">Total (USD)</span>
+                </div>
+              </div>
+
+              {/* Asks (red) — top half, aligned to bottom */}
+              <div className="flex-1 flex flex-col justify-end overflow-hidden min-h-0">
+                {orderBook.asks.map((ask, i) => (
+                  <div key={`ask-${i}`} className="relative flex items-center px-3 py-[1.5px] text-xs shrink-0 hover:bg-white/[0.02] cursor-pointer">
+                    <div
+                      className="absolute inset-y-0 right-0 bg-[#f87171]/[0.08]"
+                      style={{ width: `${(ask.total / maxAskTotal) * 100}%` }}
+                    />
+                    <span className="relative flex-1 text-left font-[family-name:var(--font-mono)] text-[#f87171]">
+                      {ask.price.toFixed(2)}
+                    </span>
+                    <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/60 text-[11px]">
+                      {ask.size.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="relative w-20 text-right font-[family-name:var(--font-mono)] text-white/30 text-[11px]">
+                      {ask.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Spread / mid price */}
+              <div className="flex items-center justify-between px-3 py-1 border-y border-white/[0.04] shrink-0">
+                <span className={`font-[family-name:var(--font-mono)] text-sm font-bold ${livePriceColor}`}>
+                  {livePrice.toFixed(2)}
+                </span>
+                <div className="text-right">
+                  <span className="text-[10px] text-white/20">Spread </span>
+                  <span className="font-[family-name:var(--font-mono)] text-[10px] text-white/30">
+                    {tickSize.toFixed(2)}
+                  </span>
+                  <span className="ml-1.5 font-[family-name:var(--font-mono)] text-[10px] text-white/20">
+                    {((tickSize / livePrice) * 100).toFixed(3)}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Bids (green) — bottom half, aligned to top */}
+              <div className="flex-1 flex flex-col justify-start overflow-hidden min-h-0">
+                {orderBook.bids.map((bid, i) => (
+                  <div key={`bid-${i}`} className="relative flex items-center px-3 py-[1.5px] text-xs shrink-0 hover:bg-white/[0.02] cursor-pointer">
+                    <div
+                      className="absolute inset-y-0 right-0 bg-[#34d399]/[0.08]"
+                      style={{ width: `${(bid.total / maxBidTotal) * 100}%` }}
+                    />
+                    <span className="relative flex-1 text-left font-[family-name:var(--font-mono)] text-[#34d399]">
+                      {bid.price.toFixed(2)}
+                    </span>
+                    <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/60 text-[11px]">
+                      {bid.size.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="relative w-20 text-right font-[family-name:var(--font-mono)] text-white/30 text-[11px]">
+                      {bid.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            /* ── Trades tab ── */
+            <div className="flex-1 overflow-y-auto min-h-0">
+              {/* Column headers */}
+              <div className="sticky top-0 flex items-center px-3 py-1 bg-[#06090f] border-b border-white/[0.04]">
+                <span className="flex-1 text-[10px] text-white/20 uppercase tracking-wider">Time</span>
+                <span className="w-20 text-right text-[10px] text-white/20 uppercase tracking-wider">Price</span>
+                <span className="w-16 text-right text-[10px] text-white/20 uppercase tracking-wider">Amount</span>
+              </div>
+              {recentTrades.length === 0 ? (
+                <div className="flex items-center justify-center h-20 text-xs text-white/20">
+                  Loading trades...
+                </div>
+              ) : (
+                recentTrades.map((trade, i) => {
+                  const isBuy = trade.side === "open_long" || trade.side === "close_short";
+                  const time = new Date(trade.created_at);
+                  const timeStr = `${time.getHours().toString().padStart(2, "0")}:${time.getMinutes().toString().padStart(2, "0")}:${time.getSeconds().toString().padStart(2, "0")}`;
+                  return (
+                    <div key={i} className="flex items-center px-3 py-[2px] hover:bg-white/[0.02]">
+                      <span className="flex-1 font-[family-name:var(--font-mono)] text-[10px] text-white/30">
+                        {timeStr}
+                      </span>
+                      <span className={`w-20 text-right font-[family-name:var(--font-mono)] text-[11px] ${isBuy ? "text-[#34d399]" : "text-[#f87171]"}`}>
+                        {parseFloat(trade.price).toFixed(2)}
+                      </span>
+                      <span className="w-16 text-right font-[family-name:var(--font-mono)] text-[11px] text-white/50">
+                        {parseFloat(trade.amount).toFixed(4)}
+                      </span>
+                    </div>
+                  );
+                })
               )}
             </div>
-            <div className="flex items-center gap-0">
-              <span className="w-16 text-right text-[10px] text-white/20 uppercase tracking-wider">Size (USD)</span>
-              <span className="w-20 text-right text-[10px] text-white/20 uppercase tracking-wider">Total (USD)</span>
-            </div>
-          </div>
-
-          {/* Asks (red) — top half, aligned to bottom */}
-          <div className="flex-1 flex flex-col justify-end overflow-hidden min-h-0">
-            {orderBook.asks.map((ask, i) => (
-              <div key={`ask-${i}`} className="relative flex items-center px-3 py-[1.5px] text-xs shrink-0 hover:bg-white/[0.02] cursor-pointer">
-                <div
-                  className="absolute inset-y-0 right-0 bg-[#f87171]/[0.08]"
-                  style={{ width: `${(ask.total / maxAskTotal) * 100}%` }}
-                />
-                <span className="relative flex-1 text-left font-[family-name:var(--font-mono)] text-[#f87171]">
-                  {ask.price.toFixed(2)}
-                </span>
-                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/60 text-[11px]">
-                  {ask.size.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </span>
-                <span className="relative w-20 text-right font-[family-name:var(--font-mono)] text-white/30 text-[11px]">
-                  {ask.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Spread / mid price */}
-          <div className="flex items-center justify-between px-3 py-1 border-y border-white/[0.04] shrink-0">
-            <span className={`font-[family-name:var(--font-mono)] text-sm font-bold ${livePriceColor}`}>
-              {livePrice.toFixed(2)}
-            </span>
-            <div className="text-right">
-              <span className="text-[10px] text-white/20">Spread </span>
-              <span className="font-[family-name:var(--font-mono)] text-[10px] text-white/30">
-                {tickSize.toFixed(2)}
-              </span>
-              <span className="ml-1.5 font-[family-name:var(--font-mono)] text-[10px] text-white/20">
-                {((tickSize / livePrice) * 100).toFixed(3)}%
-              </span>
-            </div>
-          </div>
-
-          {/* Bids (green) — bottom half, aligned to top */}
-          <div className="flex-1 flex flex-col justify-start overflow-hidden min-h-0">
-            {orderBook.bids.map((bid, i) => (
-              <div key={`bid-${i}`} className="relative flex items-center px-3 py-[1.5px] text-xs shrink-0 hover:bg-white/[0.02] cursor-pointer">
-                <div
-                  className="absolute inset-y-0 right-0 bg-[#34d399]/[0.08]"
-                  style={{ width: `${(bid.total / maxBidTotal) * 100}%` }}
-                />
-                <span className="relative flex-1 text-left font-[family-name:var(--font-mono)] text-[#34d399]">
-                  {bid.price.toFixed(2)}
-                </span>
-                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/60 text-[11px]">
-                  {bid.size.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </span>
-                <span className="relative w-20 text-right font-[family-name:var(--font-mono)] text-white/30 text-[11px]">
-                  {bid.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </span>
-              </div>
-            ))}
-          </div>
+          )}
         </div>
 
         {/* ── Right Column (Order Form + Account) ───────────────────────── */}

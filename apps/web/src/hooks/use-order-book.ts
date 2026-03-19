@@ -16,9 +16,43 @@ export interface OrderBookData {
 }
 
 /**
- * Fetches and polls the real Pacifica order book.
+ * Aggregate raw order book levels by a given tick size.
+ * For bids (descending): floor each price to the nearest tick bucket.
+ * For asks (ascending): ceil each price to the nearest tick bucket.
  */
-export function useOrderBook(symbol: string, pollMs = 1000) {
+function aggregateLevels(
+  levels: { price: number; size: number }[],
+  tickSize: number,
+  side: "bid" | "ask"
+): OrderBookLevel[] {
+  const buckets = new Map<number, number>();
+
+  for (const { price, size } of levels) {
+    // Round bid prices DOWN to the nearest tick, ask prices UP
+    const bucket =
+      side === "bid"
+        ? Math.floor(price / tickSize) * tickSize
+        : Math.ceil(price / tickSize) * tickSize;
+    buckets.set(bucket, (buckets.get(bucket) ?? 0) + size);
+  }
+
+  // Sort: bids descending (highest first), asks ascending (lowest first)
+  const sorted = Array.from(buckets.entries()).sort(([a], [b]) =>
+    side === "bid" ? b - a : a - b
+  );
+
+  let running = 0;
+  return sorted.map(([price, size]) => {
+    running += size;
+    return { price, size, total: running };
+  });
+}
+
+/**
+ * Fetches and polls the real Pacifica order book.
+ * Aggregates levels by the given tickSize.
+ */
+export function useOrderBook(symbol: string, pollMs = 1000, tickSize = 0.05) {
   const [book, setBook] = useState<OrderBookData>({ asks: [], bids: [] });
 
   useEffect(() => {
@@ -34,35 +68,34 @@ export function useOrderBook(symbol: string, pollMs = 1000) {
         const rawBids = json.data.l[0] || [];
         const rawAsks = json.data.l[1] || [];
 
-        // Bids: convert amount to USD, accumulate totals
-        let bidTotal = 0;
-        const bids: OrderBookLevel[] = rawBids.map((b: any) => {
-          const price = parseFloat(b.p);
-          const amount = parseFloat(b.a);
-          const sizeUsd = price * amount;
-          bidTotal += sizeUsd;
-          return { price, size: sizeUsd, total: bidTotal };
-        });
+        // Parse raw levels
+        const parsedBids = rawBids.map((b: { p: string; a: string }) => ({
+          price: parseFloat(b.p),
+          size: parseFloat(b.p) * parseFloat(b.a),
+        }));
+        const parsedAsks = rawAsks.map((a: { p: string; a: string }) => ({
+          price: parseFloat(a.p),
+          size: parseFloat(a.p) * parseFloat(a.a),
+        }));
 
-        // Asks: convert amount to USD, accumulate totals
-        // Asks come lowest first (closest to mid)
-        let askTotal = 0;
-        const asksRaw: OrderBookLevel[] = rawAsks.map((a: any) => {
-          const price = parseFloat(a.p);
-          const amount = parseFloat(a.a);
-          const sizeUsd = price * amount;
-          askTotal += sizeUsd;
-          return { price, size: sizeUsd, total: askTotal };
-        });
-        // Reverse asks so highest price is at top, then recalculate totals top-down
-        const asks: OrderBookLevel[] = [];
+        // Aggregate by tick size
+        const bids = aggregateLevels(parsedBids, tickSize, "bid");
+
+        // For asks: aggregate, then reverse so highest price is at top
+        const asksAscending = aggregateLevels(parsedAsks, tickSize, "ask");
+        // Recalculate totals top-down after reversing
+        const asksDescending: OrderBookLevel[] = [];
         let runningTotal = 0;
-        for (let i = asksRaw.length - 1; i >= 0; i--) {
-          runningTotal += asksRaw[i].size;
-          asks.push({ price: asksRaw[i].price, size: asksRaw[i].size, total: runningTotal });
+        for (let i = asksAscending.length - 1; i >= 0; i--) {
+          runningTotal += asksAscending[i].size;
+          asksDescending.push({
+            price: asksAscending[i].price,
+            size: asksAscending[i].size,
+            total: runningTotal,
+          });
         }
 
-        if (active) setBook({ asks, bids });
+        if (active) setBook({ asks: asksDescending, bids });
       } catch { /* ignore fetch errors */ }
     }
 
@@ -73,7 +106,7 @@ export function useOrderBook(symbol: string, pollMs = 1000) {
       active = false;
       clearInterval(interval);
     };
-  }, [symbol, pollMs]);
+  }, [symbol, pollMs, tickSize]);
 
   return book;
 }
