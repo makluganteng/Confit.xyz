@@ -14,7 +14,7 @@ import {
   USDC_MINT,
   TESTNET_USDC_MINT,
   TESTNET_DEPOSIT_OPTIONS,
-} from "@confit/pacifica-sdk/src/index.js";
+} from "@confit/pacifica-sdk";
 import bs58 from "bs58";
 
 // ─── Config ──────────────────────────────────────────────────

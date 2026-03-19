@@ -1,5 +1,5 @@
 import { Keypair } from "@solana/web3.js";
-import { signMessage, buildRequestHeader, SignatureHeader } from "./signer.js";
+import { signMessage, buildRequestHeader, SignatureHeader } from "./signer";
 
 export interface PacificaClientConfig {
   /** Base REST URL. Defaults to mainnet. */

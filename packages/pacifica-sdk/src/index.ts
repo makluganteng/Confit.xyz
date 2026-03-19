@@ -1,4 +1,4 @@
-export { PacificaClient, MAINNET_REST, MAINNET_WS, TESTNET_REST, TESTNET_WS } from "./client.js";
+export { PacificaClient, MAINNET_REST, MAINNET_WS, TESTNET_REST, TESTNET_WS } from "./client";
 export type {
   PacificaClientConfig,
   PacificaResponse,
@@ -9,9 +9,9 @@ export type {
   TransferFundsParams,
   UpdateLeverageParams,
   Subaccount,
-} from "./client.js";
-export { signMessage, buildRequestHeader } from "./signer.js";
-export type { SignatureHeader } from "./signer.js";
+} from "./client";
+export { signMessage, buildRequestHeader } from "./signer";
+export type { SignatureHeader } from "./signer";
 export {
   deposit,
   buildDepositTransaction,
@@ -24,5 +24,5 @@ export {
   TESTNET_PACIFICA_VAULT,
   TESTNET_USDC_MINT,
   TESTNET_DEPOSIT_OPTIONS,
-} from "./deposit.js";
-export type { DepositOptions } from "./deposit.js";
+} from "./deposit";
+export type { DepositOptions } from "./deposit";

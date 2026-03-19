@@ -4,6 +4,12 @@
   "version": "0.1.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./deposit": "./src/deposit.ts",
+    "./client": "./src/client.ts",
+    "./signer": "./src/signer.ts"
+  },
   "dependencies": {
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.0",

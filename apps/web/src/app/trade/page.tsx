@@ -2,6 +2,11 @@
 
 import { usePrivy } from "@privy-io/react-auth";
 import { useState, useEffect, useCallback } from "react";
+import dynamic from "next/dynamic";
+import { usePacificaWs } from "@/hooks/use-pacifica-ws";
+import { useOrderBook } from "@/hooks/use-order-book";
+
+const TradingChart = dynamic(() => import("@/components/trading-chart"), { ssr: false });
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,39 +51,12 @@ interface Order {
 // ── Mock Data ────────────────────────────────────────────────────────────────
 
 const SYMBOLS = [
-  { symbol: "SOL", pair: "SOL-PERP", price: 91.07, change: -4.41, volume: 64_700_000, high: 95.32, low: 89.14, funding: 0.0012 },
-  { symbol: "BTC", pair: "BTC-PERP", price: 67_243.50, change: 1.23, volume: 1_230_000_000, high: 68_100.00, low: 66_410.00, funding: 0.0008 },
-  { symbol: "ETH", pair: "ETH-PERP", price: 3_521.80, change: -0.89, volume: 412_000_000, high: 3_590.00, low: 3_480.00, funding: -0.0003 },
+  { symbol: "SOL", pair: "SOL-PERP", price: 128.50, change: -2.15, volume: 64_700_000, high: 132.80, low: 126.30, funding: 0.0012 },
+  { symbol: "BTC", pair: "BTC-PERP", price: 70_766.00, change: -4.54, volume: 405_898, high: 72_000.00, low: 65_000.00, funding: 0.0007 },
+  { symbol: "ETH", pair: "ETH-PERP", price: 1_910.00, change: -3.21, volume: 212_000_000, high: 1_980.00, low: 1_870.00, funding: -0.0003 },
 ];
 
-function generateOrderBook(midPrice: number) {
-  const asks: { price: number; size: number; total: number }[] = [];
-  const bids: { price: number; size: number; total: number }[] = [];
-  let askTotal = 0;
-  let bidTotal = 0;
-
-  for (let i = 10; i >= 1; i--) {
-    const spread = midPrice * 0.0003 * i;
-    const size = Math.round(Math.random() * 50_000 + 5_000);
-    askTotal += size;
-    asks.unshift({ price: midPrice + spread, size, total: askTotal });
-  }
-  // Reverse totals so they accumulate top-down
-  let runningAsk = 0;
-  for (let i = 0; i < asks.length; i++) {
-    runningAsk += asks[i].size;
-    asks[i].total = runningAsk;
-  }
-
-  for (let i = 1; i <= 10; i++) {
-    const spread = midPrice * 0.0003 * i;
-    const size = Math.round(Math.random() * 50_000 + 5_000);
-    bidTotal += size;
-    bids.push({ price: midPrice - spread, size, total: bidTotal });
-  }
-
-  return { asks, bids };
-}
+// Mock order book generator removed — now using real Pacifica data via useOrderBook hook
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 
@@ -104,9 +82,12 @@ function fmtPnl(n: number) {
 export default function TradePage() {
   const { ready, authenticated, getAccessToken } = usePrivy();
   const [challengeId, setChallengeId] = useState<string | null>(null);
+  const [challengeEquity, setChallengeEquity] = useState<number | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [orderSuccess, setOrderSuccess] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   // ── Order form state ─────────────────────────────────────────────────────
   const [selectedSymbolIdx, setSelectedSymbolIdx] = useState(0);
@@ -122,11 +103,36 @@ export default function TradePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
 
+  // ── Chart state ──────────────────────────────────────────────────────────
+  const [timeframe, setTimeframe] = useState("15m");
+
   // ── Bottom panel state ───────────────────────────────────────────────────
   const [bottomTab, setBottomTab] = useState<"positions" | "openOrders" | "tradeHistory" | "orderHistory">("positions");
 
+  // ── Order book state ───────────────────────────────────────────────────
+  const TICK_SIZES = [0.01, 0.05, 0.1, 0.5, 1.0];
+  const [tickSizeIdx, setTickSizeIdx] = useState(1); // default 0.05
+  const [obTickDropdownOpen, setObTickDropdownOpen] = useState(false);
+  const tickSize = TICK_SIZES[tickSizeIdx];
+
+  // Tick size dropdown and order book config are used by the UI below
+  // Real order book data is fetched via useOrderBook hook
+
   const currentSymbol = SYMBOLS[selectedSymbolIdx];
-  const orderBook = generateOrderBook(currentSymbol.price);
+  // ── WebSocket live prices (all symbols via "prices" channel) ─────────
+  const ws = usePacificaWs();
+  const symPrice = ws.prices.get(currentSymbol.symbol);
+  const livePrice = symPrice?.mark ?? currentSymbol.price;
+  const liveVolume = symPrice?.volume24h ?? currentSymbol.volume;
+  const liveFunding = symPrice?.funding ?? currentSymbol.funding;
+  const liveOracle = symPrice?.oracle ?? livePrice;
+  const liveOI = symPrice?.openInterest ?? 0;
+  const yesterdayPrice = symPrice?.yesterdayPrice ?? currentSymbol.price;
+  const live24hChange = yesterdayPrice > 0 ? ((livePrice - yesterdayPrice) / yesterdayPrice) * 100 : currentSymbol.change;
+  const livePriceColor = live24hChange >= 0 ? "text-[#34d399]" : "text-[#f87171]";
+
+  // ── Real order book from Pacifica REST (polled every 1s) ───────────
+  const orderBook = useOrderBook(currentSymbol.symbol, 1000);
 
   // ── Data fetching (preserved from original) ──────────────────────────────
 
@@ -142,6 +148,9 @@ export default function TradePage() {
         const { challenge } = await challengeRes.json();
         if (challenge) {
           setChallengeId(challenge.id);
+          if (challenge.currentEquity != null) {
+            setChallengeEquity(Number(challenge.currentEquity));
+          }
 
           const [posRes, histRes] = await Promise.all([
             fetch(`/api/trade/positions?challengeId=${challenge.id}`, {
@@ -209,6 +218,7 @@ export default function TradePage() {
   async function handleOrderSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setOrderSuccess(null);
     if (!sizeInput || !leverageInput) return;
 
     const token = await getAccessToken();
@@ -250,12 +260,41 @@ export default function TradePage() {
         return;
       }
 
-      await fetchData();
+      // Clear form on success
       setSizeInput("");
+      setLimitPriceInput("");
+      setTpInput("");
+      setSlInput("");
+      setOrderSuccess(`${side === "long" ? "Long" : "Short"} order placed successfully`);
+      setTimeout(() => setOrderSuccess(null), 4000);
+      await fetchData();
     } catch {
       setError("Order submission failed");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleCancelOrder(orderId: string) {
+    const token = await getAccessToken();
+    if (!token) return;
+
+    setCancellingId(orderId);
+    try {
+      const res = await fetch(`/api/trade/orders/${orderId}/cancel`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || "Failed to cancel order");
+        return;
+      }
+
+      await fetchData();
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -286,8 +325,14 @@ export default function TradePage() {
 
   const totalUnrealizedPnl = positions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
   const totalMargin = positions.reduce((acc, p) => acc + (p.margin ?? 0), 0);
-  const accountEquity = 5000 + totalUnrealizedPnl; // Mock starting equity
+  // Use real challenge equity from API when available, fallback to mock
+  const accountEquity = challengeEquity ?? 5000 + totalUnrealizedPnl;
   const idleBalance = accountEquity - totalMargin;
+
+  // ── Open orders filter (PENDING status from Pacifica) ────────────────────
+  const pendingOrders = orders.filter(
+    (o) => o.status === "PENDING" || o.status === "pending" || o.status === "open"
+  );
 
   // ── Loading / Auth gates ─────────────────────────────────────────────────
 
@@ -331,6 +376,15 @@ export default function TradePage() {
           </button>
         </div>
       )}
+      {/* ── Success Banner ───────────────────────────────────────────────── */}
+      {orderSuccess && (
+        <div className="flex items-center justify-between border-b border-emerald-500/20 bg-emerald-500/5 px-4 py-2 text-xs text-emerald-400">
+          <span>{orderSuccess}</span>
+          <button onClick={() => setOrderSuccess(null)} className="ml-4 text-emerald-300 hover:text-white">
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* ── Top Bar ─────────────────────────────────────────────────────── */}
       <div className="flex items-center border-b border-white/[0.06] bg-white/[0.02] px-4 py-0 h-10 shrink-0">
@@ -364,19 +418,22 @@ export default function TradePage() {
           )}
         </div>
 
-        {/* Mark price */}
+        {/* Mark price — live from WS when connected */}
         <div className="flex items-center gap-1.5 pr-4 border-r border-white/[0.06] mr-4">
           <span className="text-[10px] text-white/30 uppercase tracking-wider">Mark</span>
-          <span className={`font-[family-name:var(--font-mono)] text-sm font-semibold ${currentSymbol.change >= 0 ? "text-[#34d399]" : "text-[#f87171]"}`}>
-            ${fmtPrice(currentSymbol.price)}
+          <span className={`font-[family-name:var(--font-mono)] text-sm font-semibold ${livePriceColor}`}>
+            ${fmtPrice(livePrice)}
           </span>
+          {ws.connected && (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="Live" />
+          )}
         </div>
 
         {/* 24h change */}
         <div className="flex items-center gap-1.5 pr-4 border-r border-white/[0.06] mr-4">
           <span className="text-[10px] text-white/30 uppercase tracking-wider">24h</span>
-          <span className={`font-[family-name:var(--font-mono)] text-xs font-medium ${currentSymbol.change >= 0 ? "text-[#34d399]" : "text-[#f87171]"}`}>
-            {currentSymbol.change >= 0 ? "+" : ""}{currentSymbol.change.toFixed(2)}%
+          <span className={`font-[family-name:var(--font-mono)] text-xs font-medium ${live24hChange >= 0 ? "text-[#34d399]" : "text-[#f87171]"}`}>
+            {live24hChange >= 0 ? "+" : ""}{live24hChange.toFixed(2)}%
           </span>
         </div>
 
@@ -384,29 +441,31 @@ export default function TradePage() {
         <div className="flex items-center gap-1.5 pr-4 border-r border-white/[0.06] mr-4">
           <span className="text-[10px] text-white/30 uppercase tracking-wider">Vol</span>
           <span className="font-[family-name:var(--font-mono)] text-xs text-white/60">
-            {fmtUsd(currentSymbol.volume)}
+            {fmtUsd(liveVolume)}
           </span>
         </div>
 
-        {/* 24h high/low */}
+        {/* Oracle */}
         <div className="flex items-center gap-1.5 pr-4 border-r border-white/[0.06] mr-4">
-          <span className="text-[10px] text-white/30 uppercase tracking-wider">High</span>
+          <span className="text-[10px] text-white/30 uppercase tracking-wider">Oracle</span>
           <span className="font-[family-name:var(--font-mono)] text-xs text-white/60">
-            ${fmtPrice(currentSymbol.high)}
+            ${fmtPrice(liveOracle)}
           </span>
         </div>
+
+        {/* Open Interest */}
         <div className="flex items-center gap-1.5 pr-4 border-r border-white/[0.06] mr-4">
-          <span className="text-[10px] text-white/30 uppercase tracking-wider">Low</span>
+          <span className="text-[10px] text-white/30 uppercase tracking-wider">OI</span>
           <span className="font-[family-name:var(--font-mono)] text-xs text-white/60">
-            ${fmtPrice(currentSymbol.low)}
+            {fmtUsd(liveOI)}
           </span>
         </div>
 
         {/* Funding */}
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] text-white/30 uppercase tracking-wider">Funding</span>
-          <span className={`font-[family-name:var(--font-mono)] text-xs ${currentSymbol.funding >= 0 ? "text-[#34d399]" : "text-[#f87171]"}`}>
-            {currentSymbol.funding >= 0 ? "+" : ""}{(currentSymbol.funding * 100).toFixed(4)}%
+          <span className={`font-[family-name:var(--font-mono)] text-xs ${liveFunding >= 0 ? "text-[#34d399]" : "text-[#f87171]"}`}>
+            {liveFunding >= 0 ? "+" : ""}{(liveFunding * 100).toFixed(4)}%
           </span>
         </div>
       </div>
@@ -416,34 +475,30 @@ export default function TradePage() {
         {/* ── Chart Area (left ~60%) ────────────────────────────────────── */}
         <div className="flex-1 flex flex-col border-r border-white/[0.06] min-w-0">
           {/* Chart */}
-          <div className="flex-1 flex items-center justify-center bg-white/[0.01] relative">
-            {/* Chart toolbar mock */}
-            <div className="absolute top-0 left-0 right-0 flex items-center gap-1 px-3 py-1.5 border-b border-white/[0.04]">
-              {["1m", "5m", "15m", "1H", "4H", "1D", "1W"].map((tf) => (
+          <div className="flex-1 flex flex-col bg-white/[0.01] relative min-h-0">
+            {/* Chart toolbar */}
+            <div className="flex items-center gap-1 px-3 py-1.5 border-b border-white/[0.04] shrink-0">
+              {(["1m", "5m", "15m", "1H", "4H", "1D", "1W"] as const).map((tf) => (
                 <button
                   key={tf}
+                  onClick={() => setTimeframe(tf)}
                   className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                    tf === "15m" ? "text-emerald-400 bg-emerald-400/10" : "text-white/30 hover:text-white/60"
+                    tf === timeframe ? "text-emerald-400 bg-emerald-400/10" : "text-white/30 hover:text-white/60"
                   }`}
                 >
                   {tf}
                 </button>
               ))}
               <div className="mx-2 h-3 w-px bg-white/[0.06]" />
-              {["Line", "Candle", "Area"].map((ct) => (
-                <button
-                  key={ct}
-                  className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                    ct === "Candle" ? "text-white/60" : "text-white/20 hover:text-white/40"
-                  }`}
-                >
-                  {ct}
-                </button>
-              ))}
+              <span className="text-[10px] text-white/20">Candle</span>
             </div>
-            <div className="text-center">
-              <div className="text-[#6b7894] text-xs">TradingView chart</div>
-              <div className="text-white/10 text-[10px] mt-1">Integration coming soon</div>
+            {/* Actual chart */}
+            <div className="flex-1 min-h-0">
+              <TradingChart
+                symbol={currentSymbol.symbol}
+                basePrice={livePrice}
+                timeframe={timeframe}
+              />
             </div>
           </div>
 
@@ -453,7 +508,7 @@ export default function TradePage() {
             <div className="flex items-center gap-0 border-b border-white/[0.06] px-0 shrink-0">
               {([
                 { key: "positions", label: `Positions (${positions.length})` },
-                { key: "openOrders", label: "Open Orders" },
+                { key: "openOrders", label: `Open Orders${pendingOrders.length > 0 ? ` (${pendingOrders.length})` : ""}` },
                 { key: "tradeHistory", label: `Trade History (${orders.length})` },
                 { key: "orderHistory", label: "Order History" },
               ] as const).map((tab) => (
@@ -556,14 +611,14 @@ export default function TradePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {orders.filter(o => o.status === "open").length === 0 ? (
+                    {pendingOrders.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-xs text-white/20">
                           No open orders
                         </td>
                       </tr>
                     ) : (
-                      orders.filter(o => o.status === "open").map((o) => (
+                      pendingOrders.map((o) => (
                         <tr key={o.id} className="border-t border-white/[0.03] hover:bg-white/[0.02] text-xs">
                           <td className="py-1.5 px-3 font-medium text-white">{o.pair}</td>
                           <td className="py-1.5 px-3">
@@ -578,8 +633,12 @@ export default function TradePage() {
                           </td>
                           <td className="py-1.5 px-3 text-right font-[family-name:var(--font-mono)] text-white/60">{o.leverage}x</td>
                           <td className="py-1.5 px-3 text-right">
-                            <button className="px-2 py-0.5 text-[10px] font-medium border border-white/[0.06] text-white/50 hover:text-[#f87171] hover:border-[#f87171]/30 transition-colors">
-                              Cancel
+                            <button
+                              onClick={() => handleCancelOrder(o.id)}
+                              disabled={cancellingId === o.id}
+                              className="px-2 py-0.5 text-[10px] font-medium border border-white/[0.06] text-white/50 hover:text-[#f87171] hover:border-[#f87171]/30 transition-colors disabled:opacity-30"
+                            >
+                              {cancellingId === o.id ? "Cancelling..." : "Cancel"}
                             </button>
                           </td>
                         </tr>
@@ -699,77 +758,106 @@ export default function TradePage() {
         </div>
 
         {/* ── Order Book (center ~20%) ──────────────────────────────────── */}
-        <div className="w-[240px] shrink-0 border-r border-white/[0.06] flex flex-col overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.06] shrink-0">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Order Book</span>
-            <div className="flex items-center gap-1">
-              {/* Toggle icons (decorative) */}
-              <button className="p-0.5 text-white/20 hover:text-white/40">
-                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
-                  <rect x="1" y="1" width="10" height="4" rx="0.5" opacity="0.4" />
-                  <rect x="1" y="7" width="10" height="4" rx="0.5" />
-                </svg>
+        <div className="w-[260px] shrink-0 border-r border-white/[0.06] flex flex-col" style={{ minHeight: 0 }}>
+          {/* Tabs: Order Book / Trades */}
+          <div className="flex items-center justify-between border-b border-white/[0.06] shrink-0">
+            <div className="flex items-center">
+              <button className="px-3 py-1.5 text-xs font-medium text-white border-b-2 border-emerald-400">
+                Order Book
+              </button>
+              <button className="px-3 py-1.5 text-xs font-medium text-white/30 border-b-2 border-transparent hover:text-white/50">
+                Trades
               </button>
             </div>
           </div>
 
-          {/* Column headers */}
-          <div className="flex items-center px-3 py-1 text-[10px] text-white/20 uppercase tracking-wider shrink-0">
-            <span className="flex-1 text-left">Price</span>
-            <span className="w-16 text-right">Size</span>
-            <span className="w-16 text-right">Total</span>
+          {/* Tick size selector + column headers */}
+          <div className="flex items-center justify-between px-3 py-1 shrink-0">
+            <div className="relative">
+              <button
+                onClick={() => setObTickDropdownOpen(!obTickDropdownOpen)}
+                className="flex items-center gap-1 text-[10px] font-[family-name:var(--font-mono)] text-white/50 hover:text-white/80 transition-colors"
+              >
+                {tickSize.toFixed(2)}
+                <svg className="w-2.5 h-2.5" viewBox="0 0 10 10" fill="currentColor">
+                  <path d="M2 4L5 7L8 4" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                </svg>
+              </button>
+              {obTickDropdownOpen && (
+                <div className="absolute top-full left-0 mt-1 bg-[#0d1117] border border-white/10 shadow-xl z-50">
+                  {TICK_SIZES.map((t, i) => (
+                    <button
+                      key={t}
+                      onClick={() => { setTickSizeIdx(i); setObTickDropdownOpen(false); }}
+                      className={`block w-full px-3 py-1 text-left text-[10px] font-[family-name:var(--font-mono)] transition-colors ${
+                        i === tickSizeIdx ? "text-emerald-400 bg-emerald-400/5" : "text-white/50 hover:bg-white/[0.04] hover:text-white/80"
+                      }`}
+                    >
+                      {t.toFixed(2)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-0">
+              <span className="w-16 text-right text-[10px] text-white/20 uppercase tracking-wider">Size (USD)</span>
+              <span className="w-20 text-right text-[10px] text-white/20 uppercase tracking-wider">Total (USD)</span>
+            </div>
           </div>
 
-          {/* Asks (red) — top half */}
-          <div className="flex-1 flex flex-col justify-end overflow-hidden px-0">
+          {/* Asks (red) — top half, aligned to bottom */}
+          <div className="flex-1 flex flex-col justify-end overflow-hidden min-h-0">
             {orderBook.asks.map((ask, i) => (
-              <div key={`ask-${i}`} className="relative flex items-center px-3 py-[2px] text-xs">
-                {/* Background bar */}
+              <div key={`ask-${i}`} className="relative flex items-center px-3 py-[1.5px] text-xs shrink-0 hover:bg-white/[0.02] cursor-pointer">
                 <div
-                  className="absolute inset-y-0 right-0 bg-[#f87171]/[0.06]"
+                  className="absolute inset-y-0 right-0 bg-[#f87171]/[0.08]"
                   style={{ width: `${(ask.total / maxAskTotal) * 100}%` }}
                 />
                 <span className="relative flex-1 text-left font-[family-name:var(--font-mono)] text-[#f87171]">
-                  {fmtPrice(ask.price)}
+                  {ask.price.toFixed(2)}
                 </span>
-                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/50">
-                  {fmtUsd(ask.size).replace("$", "")}
+                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/60 text-[11px]">
+                  {ask.size.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
-                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/30">
-                  {fmtUsd(ask.total).replace("$", "")}
+                <span className="relative w-20 text-right font-[family-name:var(--font-mono)] text-white/30 text-[11px]">
+                  {ask.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
               </div>
             ))}
           </div>
 
           {/* Spread / mid price */}
-          <div className="flex items-center justify-center px-3 py-1.5 border-y border-white/[0.04] shrink-0">
-            <span className={`font-[family-name:var(--font-mono)] text-sm font-bold ${currentSymbol.change >= 0 ? "text-[#34d399]" : "text-[#f87171]"}`}>
-              ${fmtPrice(currentSymbol.price)}
+          <div className="flex items-center justify-between px-3 py-1 border-y border-white/[0.04] shrink-0">
+            <span className={`font-[family-name:var(--font-mono)] text-sm font-bold ${livePriceColor}`}>
+              {livePrice.toFixed(2)}
             </span>
-            <span className="ml-2 text-[10px] text-white/20">
-              Spread {((orderBook.asks[orderBook.asks.length - 1]?.price ?? 0) - (orderBook.bids[0]?.price ?? 0)).toFixed(4)}
-            </span>
+            <div className="text-right">
+              <span className="text-[10px] text-white/20">Spread </span>
+              <span className="font-[family-name:var(--font-mono)] text-[10px] text-white/30">
+                {tickSize.toFixed(2)}
+              </span>
+              <span className="ml-1.5 font-[family-name:var(--font-mono)] text-[10px] text-white/20">
+                {((tickSize / livePrice) * 100).toFixed(3)}%
+              </span>
+            </div>
           </div>
 
-          {/* Bids (green) — bottom half */}
-          <div className="flex-1 flex flex-col justify-start overflow-hidden px-0">
+          {/* Bids (green) — bottom half, aligned to top */}
+          <div className="flex-1 flex flex-col justify-start overflow-hidden min-h-0">
             {orderBook.bids.map((bid, i) => (
-              <div key={`bid-${i}`} className="relative flex items-center px-3 py-[2px] text-xs">
-                {/* Background bar */}
+              <div key={`bid-${i}`} className="relative flex items-center px-3 py-[1.5px] text-xs shrink-0 hover:bg-white/[0.02] cursor-pointer">
                 <div
-                  className="absolute inset-y-0 right-0 bg-[#34d399]/[0.06]"
+                  className="absolute inset-y-0 right-0 bg-[#34d399]/[0.08]"
                   style={{ width: `${(bid.total / maxBidTotal) * 100}%` }}
                 />
                 <span className="relative flex-1 text-left font-[family-name:var(--font-mono)] text-[#34d399]">
-                  {fmtPrice(bid.price)}
+                  {bid.price.toFixed(2)}
                 </span>
-                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/50">
-                  {fmtUsd(bid.size).replace("$", "")}
+                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/60 text-[11px]">
+                  {bid.size.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
-                <span className="relative w-16 text-right font-[family-name:var(--font-mono)] text-white/30">
-                  {fmtUsd(bid.total).replace("$", "")}
+                <span className="relative w-20 text-right font-[family-name:var(--font-mono)] text-white/30 text-[11px]">
+                  {bid.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
               </div>
             ))}
